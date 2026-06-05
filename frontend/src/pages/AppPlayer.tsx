@@ -1,17 +1,19 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
-import { App, Widget, Step, WorkOrder } from '../types';
+import { App, Widget, Step, WorkOrder, ProductType } from '../types';
 import {
   ChevronLeft, ChevronRight, CheckCircle, X, Clock, Factory,
-  AlertCircle, User, Monitor, Loader2, AlertTriangle, Zap
+  AlertCircle, Loader2, AlertTriangle, Zap, Tag
 } from 'lucide-react';
 
 export default function AppPlayer() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [app, setApp] = useState<App | null>(null);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
+  const [productTypes, setProductTypes] = useState<ProductType[]>([]);
   const [currentStepIdx, setCurrentStepIdx] = useState(0);
   const [formData, setFormData] = useState<Record<string, any>>({});
   const [stepTimes, setStepTimes] = useState<Record<number, number>>({});
@@ -21,15 +23,22 @@ export default function AppPlayer() {
   const [status, setStatus] = useState<'setup' | 'running' | 'completed' | 'abandoned'>('setup');
   const [operatorName, setOperatorName] = useState('');
   const [selectedWorkOrderId, setSelectedWorkOrderId] = useState('');
+  const [selectedProductTypeId, setSelectedProductTypeId] = useState('');
   const [loading, setLoading] = useState(true);
   const [taktExceededSteps, setTaktExceededSteps] = useState<number[]>([]);
   const [flashPhase, setFlashPhase] = useState(false);
 
   useEffect(() => {
     if (id) {
-      Promise.all([api.getApp(id), api.getWorkOrders()]).then(([a, wos]) => {
+      Promise.all([api.getApp(id), api.getWorkOrders(), api.getProductTypes(id)]).then(([a, wos, pts]) => {
         setApp(a);
         setWorkOrders(wos.filter((w: WorkOrder) => w.app_id === id && w.status !== 'completed' && w.status !== 'cancelled'));
+        setProductTypes(pts);
+        // Pre-fill from URL params (coming from Operator Portal)
+        const woParam = searchParams.get('wo');
+        const nameParam = searchParams.get('name');
+        if (woParam) setSelectedWorkOrderId(woParam);
+        if (nameParam) setOperatorName(nameParam);
         setLoading(false);
       });
     }
@@ -45,7 +54,20 @@ export default function AppPlayer() {
   }, [status, stepStartTime]);
 
   const currentStep = app?.steps[currentStepIdx];
-  const stepTaktSeconds = currentStep?.takt_time_seconds ?? 0;
+
+  // Resolve takt time: product type override takes priority over step default
+  const getStepTakt = (idx: number): number => {
+    const step = app?.steps[idx];
+    if (!step) return 0;
+    if (selectedProductTypeId) {
+      const pt = productTypes.find(p => p.id === selectedProductTypeId);
+      if (pt && pt.takt_overrides[idx] !== undefined) return Number(pt.takt_overrides[idx]);
+      if (pt && pt.takt_overrides[String(idx)] !== undefined) return Number(pt.takt_overrides[String(idx)]);
+    }
+    return step.takt_time_seconds ?? 0;
+  };
+
+  const stepTaktSeconds = getStepTakt(currentStepIdx);
   const isOverTakt = stepTaktSeconds > 0 && stepElapsed > stepTaktSeconds;
 
   // Takt flash effect
@@ -68,6 +90,7 @@ export default function AppPlayer() {
       app_id: id,
       operator_name: operatorName || 'Operator',
       work_order_id: selectedWorkOrderId || undefined,
+      product_type_id: selectedProductTypeId || undefined,
     });
     setCompletionId(c.id);
     setStepStartTime(Date.now());
@@ -155,6 +178,19 @@ export default function AppPlayer() {
               <input className="input-field" placeholder="Enter your name..." value={operatorName}
                 onChange={e => setOperatorName(e.target.value)} onKeyDown={e => e.key === 'Enter' && startRun()} autoFocus />
             </div>
+            {productTypes.length > 0 && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-1.5">
+                  <Tag size={13} className="text-purple-500" /> Product Type
+                </label>
+                <select className="input-field" value={selectedProductTypeId} onChange={e => setSelectedProductTypeId(e.target.value)}>
+                  <option value="">— Standard (default takt) —</option>
+                  {productTypes.map(pt => (
+                    <option key={pt.id} value={pt.id}>{pt.name}{pt.description ? ` — ${pt.description}` : ''}</option>
+                  ))}
+                </select>
+              </div>
+            )}
             {workOrders.length > 0 && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">Work Order (optional)</label>
@@ -191,6 +227,11 @@ export default function AppPlayer() {
             </div>
             <h1 className="text-2xl font-bold text-gray-900">Complete!</h1>
             <p className="text-gray-500 text-sm mt-1">{app.name} · {operatorName || 'Operator'}</p>
+            {selectedProductTypeId && (
+              <p className="text-xs text-purple-600 mt-0.5 flex items-center justify-center gap-1">
+                <Tag size={11} /> {productTypes.find(p => p.id === selectedProductTypeId)?.name}
+              </p>
+            )}
           </div>
           {taktExceededSteps.length > 0 && (
             <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5">
@@ -206,7 +247,8 @@ export default function AppPlayer() {
             </div>
             {app.steps.map((step, i) => {
               const t = stepTimes[i] ?? 0;
-              const exceeded = step.takt_time_seconds && t > step.takt_time_seconds;
+              const taktS = getStepTakt(i);
+              const exceeded = taktS > 0 && t > taktS;
               return (
                 <div key={step.id} className="flex justify-between text-sm">
                   <span className="text-gray-600">{step.name}</span>
@@ -221,7 +263,7 @@ export default function AppPlayer() {
             </div>
           </div>
           <div className="flex gap-3">
-            <button onClick={() => { setStatus('setup'); setCurrentStepIdx(0); setFormData({}); setStepTimes({}); setCompletionId(null); setTaktExceededSteps([]); }} className="btn-primary flex-1 justify-center">
+            <button onClick={() => { setStatus('setup'); setCurrentStepIdx(0); setFormData({}); setStepTimes({}); setCompletionId(null); setTaktExceededSteps([]); setSelectedProductTypeId(''); }} className="btn-primary flex-1 justify-center">
               Run Again
             </button>
             <button onClick={() => navigate('/apps')} className="btn-secondary flex-1 justify-center">
@@ -329,7 +371,7 @@ export default function AppPlayer() {
                 idx === currentStepIdx ? 'border-white bg-white text-blue-600' : 'border-gray-600 text-gray-600'
               }`}>{idx + 1}</span>}
             {step.name}
-            {step.takt_time_seconds ? <Clock size={10} className="opacity-60" /> : null}
+            {getStepTakt(idx) > 0 ? <Clock size={10} className="opacity-60" /> : null}
           </div>
         ))}
       </div>

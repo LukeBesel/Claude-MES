@@ -89,6 +89,16 @@ export interface WorkOrder {
   created_at: string; updated_at: string;
 }
 
+export interface ProductType {
+  id: string;
+  app_id: string;
+  name: string;
+  description: string;
+  takt_overrides: Record<string, number>;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface AnalyticsOverview {
   totalCompletions: number; todayCompletions: number; inProgress: number;
   totalApps: number; publishedApps: number; activeStations: number;

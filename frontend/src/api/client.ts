@@ -66,6 +66,12 @@ export const api = {
   deleteWorkOrder: (id: string) => request<any>(`/work-orders/${id}`, { method: 'DELETE' }),
   completeWorkOrder: (id: string) => request<any>(`/work-orders/${id}/complete`, { method: 'PUT' }),
 
+  // Product Types
+  getProductTypes: (appId: string) => request<any[]>(`/product-types?app_id=${appId}`),
+  createProductType: (data: any) => request<any>('/product-types', { method: 'POST', body: JSON.stringify(data) }),
+  updateProductType: (id: string, data: any) => request<any>(`/product-types/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteProductType: (id: string) => request<any>(`/product-types/${id}`, { method: 'DELETE' }),
+
   // Analytics
   getOverview: () => request<any>('/analytics/overview'),
   getThroughput: (days?: number) => request<any[]>(`/analytics/throughput?days=${days ?? 30}`),
@@ -76,4 +82,6 @@ export const api = {
   getManagerView: () => request<any>('/analytics/manager-view'),
   getPlantView: () => request<any>('/analytics/plant-view'),
   getCompletionDetail: (id: string) => request<any>(`/analytics/completion/${id}`),
+  getStepMetrics: (appId: string, days?: number) => request<any>(`/analytics/step-metrics/${appId}?days=${days ?? 90}`),
+  getCapacity: () => request<any>('/analytics/capacity'),
 };

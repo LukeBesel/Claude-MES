@@ -1,7 +1,8 @@
-import { Outlet, NavLink } from 'react-router-dom';
+import { Outlet, NavLink, Link } from 'react-router-dom';
 import {
   LayoutDashboard, AppWindow, Database, BarChart3, Monitor,
-  Calendar, Factory, Settings, Activity, Building2, ClipboardList
+  Calendar, Settings, Activity, Building2, ClipboardList,
+  Tablet, Timer, Users
 } from 'lucide-react';
 
 const NAV = [
@@ -11,6 +12,7 @@ const NAV = [
       { to: '/', icon: LayoutDashboard, label: 'Dashboard', exact: true },
       { to: '/apps', icon: AppWindow, label: 'App Library' },
       { to: '/schedule', icon: Calendar, label: 'Schedule' },
+      { to: '/operator', icon: Tablet, label: 'Operator Portal' },
     ]
   },
   {
@@ -24,6 +26,8 @@ const NAV = [
   {
     group: 'Data & Analytics',
     items: [
+      { to: '/step-metrics', icon: Timer, label: 'Step Metrics' },
+      { to: '/capacity', icon: Users, label: 'Capacity Plan' },
       { to: '/analytics', icon: BarChart3, label: 'Analytics' },
       { to: '/tables', icon: Database, label: 'Tables' },
     ]
@@ -36,7 +40,7 @@ export default function Layout() {
       {/* Sidebar */}
       <aside className="w-56 flex-shrink-0 flex flex-col" style={{ backgroundColor: '#0a1628' }}>
         {/* Logo */}
-        <div className="p-4 border-b border-white/10">
+        <Link to="/" className="block p-4 border-b border-white/10 hover:bg-white/5 transition-colors">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl flex items-center justify-center bg-gradient-to-br from-blue-500 to-blue-700 shadow-lg">
               <Activity size={18} className="text-white" />
@@ -46,7 +50,7 @@ export default function Layout() {
               <div className="text-blue-300/70 text-[11px] font-medium">Manufacturing Intelligence</div>
             </div>
           </div>
-        </div>
+        </Link>
 
         {/* Nav */}
         <nav className="flex-1 p-3 overflow-y-auto space-y-5">

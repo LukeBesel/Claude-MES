@@ -291,6 +291,171 @@ router.get('/plant-view', (req, res) => {
   });
 });
 
+// ─── GET /step-metrics/:appId - per-step timing analytics ────────────────────
+
+router.get('/step-metrics/:appId', (req, res) => {
+  const { appId } = req.params;
+  const days = parseInt(req.query.days || '90');
+
+  const app = db.prepare('SELECT id, name, steps FROM apps WHERE id = ?').get(appId);
+  if (!app) return res.status(404).json({ error: 'App not found' });
+
+  const steps = JSON.parse(app.steps || '[]');
+
+  const rows = db.prepare(`
+    SELECT step_times, takt_exceeded_steps, date(completed_at) as date
+    FROM completions
+    WHERE app_id = ? AND status = 'completed' AND completed_at IS NOT NULL
+      AND completed_at >= date('now', '-' || ? || ' days')
+    ORDER BY completed_at ASC
+  `).all(appId, days);
+
+  const stepStats = steps.map((step, idx) => {
+    const times = [];
+    const dateMap = {};
+
+    for (const row of rows) {
+      const st = JSON.parse(row.step_times || '{}');
+      const t = st[idx] !== undefined ? Number(st[idx]) : null;
+      if (t !== null && t > 0) {
+        times.push(t);
+        if (!dateMap[row.date]) dateMap[row.date] = [];
+        dateMap[row.date].push(t);
+      }
+    }
+
+    const sorted = [...times].sort((a, b) => a - b);
+    const avg = times.length ? Math.round(times.reduce((s, v) => s + v, 0) / times.length) : 0;
+    const min = times.length ? sorted[0] : 0;
+    const max = times.length ? sorted[sorted.length - 1] : 0;
+    const p95 = times.length ? (sorted[Math.floor(sorted.length * 0.95)] ?? max) : 0;
+
+    const taktSeconds = step.takt_time_seconds || step.takt_time || 0;
+    const exceededCount = rows.filter(row => {
+      const te = JSON.parse(row.takt_exceeded_steps || '[]');
+      return te.includes(idx) || te.includes(String(idx));
+    }).length;
+
+    const trend = Object.entries(dateMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, vals]) => ({
+        date,
+        avg_seconds: Math.round(vals.reduce((s, v) => s + v, 0) / vals.length),
+        count: vals.length,
+      }));
+
+    return {
+      index: idx,
+      name: step.name,
+      takt_seconds: taktSeconds,
+      completions: times.length,
+      avg_seconds: avg,
+      min_seconds: min,
+      max_seconds: max,
+      p95_seconds: p95,
+      over_takt_count: exceededCount,
+      over_takt_pct: times.length > 0 ? Math.round((exceededCount / times.length) * 100) : 0,
+      trend,
+    };
+  });
+
+  res.json({
+    app_id: appId,
+    app_name: app.name,
+    total_completions: rows.length,
+    steps: stepStats,
+  });
+});
+
+// ─── GET /capacity - capacity planning data ───────────────────────────────────
+
+router.get('/capacity', (req, res) => {
+  const workOrders = db.prepare(`
+    SELECT wo.*, d.name AS department_name, d.color AS department_color, a.name AS app_name
+    FROM work_orders wo
+    LEFT JOIN departments d ON d.id = wo.department_id
+    LEFT JOIN apps a ON a.id = wo.app_id
+    WHERE wo.status NOT IN ('completed', 'cancelled')
+    ORDER BY wo.priority DESC, wo.scheduled_end ASC
+  `).all();
+
+  const enriched = workOrders.map(wo => {
+    const ctRow = db.prepare(`
+      SELECT AVG((julianday(completed_at) - julianday(started_at)) * 24 * 60) AS avg_minutes
+      FROM completions
+      WHERE work_order_id = ? AND status = 'completed' AND completed_at IS NOT NULL
+    `).get(wo.id);
+
+    const avgCycleMinutes = ctRow?.avg_minutes
+      ? Math.round(ctRow.avg_minutes * 10) / 10
+      : (wo.takt_time_minutes || 20);
+
+    const remaining = Math.max(0, wo.quantity - wo.quantity_completed);
+    const hoursRequired = (remaining * avgCycleMinutes) / 60;
+
+    let daysRemaining = null;
+    if (wo.scheduled_end) {
+      const end = new Date(wo.scheduled_end);
+      const now = new Date();
+      daysRemaining = Math.max(0, Math.ceil((end - now) / (1000 * 60 * 60 * 24)));
+    }
+
+    const operatorsNeeded = daysRemaining && daysRemaining > 0
+      ? Math.round((hoursRequired / (daysRemaining * 8)) * 10) / 10
+      : Math.round((hoursRequired / 8) * 10) / 10;
+
+    return {
+      id: wo.id,
+      work_order_number: wo.work_order_number,
+      part_name: wo.part_name,
+      part_number: wo.part_number,
+      quantity: wo.quantity,
+      quantity_completed: wo.quantity_completed,
+      remaining,
+      takt_time_minutes: wo.takt_time_minutes,
+      avg_cycle_minutes: avgCycleMinutes,
+      hours_required: Math.round(hoursRequired * 10) / 10,
+      operators_needed_8h: operatorsNeeded,
+      days_remaining: daysRemaining,
+      scheduled_end: wo.scheduled_end,
+      priority: wo.priority,
+      status: wo.status,
+      department_name: wo.department_name || 'Unassigned',
+      department_color: wo.department_color || '#6b7280',
+    };
+  });
+
+  const deptMap = {};
+  for (const wo of enriched) {
+    const dept = wo.department_name;
+    if (!deptMap[dept]) deptMap[dept] = {
+      name: dept,
+      color: wo.department_color,
+      hours_required: 0,
+      operators_needed: 0,
+      work_order_count: 0,
+    };
+    deptMap[dept].hours_required += wo.hours_required;
+    deptMap[dept].operators_needed += wo.operators_needed_8h;
+    deptMap[dept].work_order_count += 1;
+  }
+
+  const departments = Object.values(deptMap).map(d => ({
+    ...d,
+    hours_required: Math.round(d.hours_required * 10) / 10,
+    operators_needed: Math.round(d.operators_needed * 10) / 10,
+  }));
+
+  res.json({
+    work_orders: enriched,
+    summary: {
+      total_hours_required: Math.round(enriched.reduce((s, wo) => s + wo.hours_required, 0) * 10) / 10,
+      total_operators_needed_8h: Math.round(enriched.reduce((s, wo) => s + wo.operators_needed_8h, 0) * 10) / 10,
+      departments,
+    },
+  });
+});
+
 // ─── GET /completion/:id - detailed single completion with step breakdown ──────
 
 router.get('/completion/:id', (req, res) => {

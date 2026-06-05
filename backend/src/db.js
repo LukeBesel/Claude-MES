@@ -75,6 +75,9 @@ if (!completionCols.includes('work_order_id')) {
 if (!completionCols.includes('takt_exceeded_steps')) {
   db.exec("ALTER TABLE completions ADD COLUMN takt_exceeded_steps TEXT DEFAULT '[]'");
 }
+if (!completionCols.includes('product_type_id')) {
+  db.exec('ALTER TABLE completions ADD COLUMN product_type_id TEXT');
+}
 
 // ─── New tables ──────────────────────────────────────────────────────────────
 
@@ -103,6 +106,16 @@ db.exec(`
     status TEXT DEFAULT 'pending' CHECK(status IN ('pending','in_progress','completed','overdue','cancelled')),
     priority TEXT DEFAULT 'medium' CHECK(priority IN ('low','medium','high','critical')),
     notes TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS product_types (
+    id TEXT PRIMARY KEY,
+    app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    takt_overrides TEXT DEFAULT '{}',
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
   );

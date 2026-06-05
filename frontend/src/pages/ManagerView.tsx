@@ -2,11 +2,11 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 import {
-  Users, Clock, CheckCircle2, AlertTriangle, TrendingUp, Activity,
-  RefreshCw, ChevronRight, Zap, Timer, Package
+  Users, Clock, CheckCircle2, AlertTriangle, Activity,
+  RefreshCw, ChevronRight, Zap, Timer, Package, TrendingUp, TrendingDown
 } from 'lucide-react';
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── Types matching actual API response ────────────────────────────────────────
 
 interface ActiveCompletion {
   id: string;
@@ -23,43 +23,51 @@ interface WorkOrder {
   work_order_number: string;
   part_number: string;
   part_name: string;
-  app_id: string;
-  app_name: string;
-  department: string;
-  quantity_total: number;
+  app_id: string | null;
+  app_name?: string;
+  department_name?: string;
+  department_color?: string;
+  quantity: number;
   quantity_completed: number;
+  completion_pct: number;
   priority: 'critical' | 'high' | 'medium' | 'low';
-  schedule_status: 'on_track' | 'at_risk' | 'behind' | 'not_started';
+  schedule_status: 'on_track' | 'at_risk' | 'behind' | 'not_started' | 'overdue' | 'completed';
   scheduled_start: string;
   scheduled_end: string;
-  takt_time: number;
+  takt_time_minutes: number;
+  status: string;
   notes: string;
 }
 
-interface DepartmentStat {
-  department: string;
-  active_operators: number;
-  completions_today: number;
-  avg_cycle_time: number;
-  takt_time: number;
+interface DeptStat {
+  id: string;
+  name: string;
+  color: string;
+  manager_name: string;
+  active_count: number;
+  on_track_count: number;
+  behind_count: number;
+  total_work_orders: number;
 }
 
 interface ManagerViewData {
   active_completions: ActiveCompletion[];
   work_orders: WorkOrder[];
-  department_stats: DepartmentStat[];
+  department_stats: DeptStat[];
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const SCHEDULE_STATUS_MAP: Record<string, { label: string; cls: string }> = {
+const SCHEDULE_STATUS: Record<string, { label: string; cls: string }> = {
   on_track:    { label: 'On Track',    cls: 'bg-green-100 text-green-700 border border-green-200' },
   at_risk:     { label: 'At Risk',     cls: 'bg-amber-100 text-amber-700 border border-amber-200' },
   behind:      { label: 'Behind',      cls: 'bg-red-100 text-red-700 border border-red-200' },
+  overdue:     { label: 'Overdue',     cls: 'bg-red-200 text-red-800 border border-red-300' },
   not_started: { label: 'Not Started', cls: 'bg-gray-100 text-gray-600 border border-gray-200' },
+  completed:   { label: 'Completed',   cls: 'bg-emerald-100 text-emerald-700 border border-emerald-200' },
 };
 
-const PRIORITY_MAP: Record<string, { label: string; cls: string }> = {
+const PRIORITY: Record<string, { label: string; cls: string }> = {
   critical: { label: 'Critical', cls: 'bg-red-600 text-white' },
   high:     { label: 'High',     cls: 'bg-orange-500 text-white' },
   medium:   { label: 'Medium',   cls: 'bg-blue-500 text-white' },
@@ -88,18 +96,19 @@ function formatElapsed(seconds: number) {
 }
 
 function formatDate(iso: string) {
+  if (!iso) return '—';
   return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
 function calcETA(wo: WorkOrder): string {
-  if (wo.quantity_completed >= wo.quantity_total) return 'Complete';
-  const remaining = wo.quantity_total - wo.quantity_completed;
-  const etaMinutes = remaining * wo.takt_time;
-  if (etaMinutes < 60) return `~${Math.round(etaMinutes)}m`;
-  return `~${(etaMinutes / 60).toFixed(1)}h`;
+  if (wo.quantity_completed >= wo.quantity) return 'Complete';
+  const remaining = wo.quantity - wo.quantity_completed;
+  const etaMins = remaining * (wo.takt_time_minutes || 15);
+  if (etaMins < 60) return `~${Math.round(etaMins)}m`;
+  return `~${(etaMins / 60).toFixed(1)}h`;
 }
 
-// ── Sub-components ─────────────────────────────────────────────────────────────
+// ── Sub-components ────────────────────────────────────────────────────────────
 
 function ActiveRunCard({ run }: { run: ActiveCompletion }) {
   const elapsed = useElapsedSeconds(run.started_at);
@@ -131,56 +140,72 @@ function ActiveRunCard({ run }: { run: ActiveCompletion }) {
 }
 
 function WorkOrderCard({ wo }: { wo: WorkOrder }) {
-  const pct = wo.quantity_total > 0 ? Math.round((wo.quantity_completed / wo.quantity_total) * 100) : 0;
-  const status = SCHEDULE_STATUS_MAP[wo.schedule_status] ?? SCHEDULE_STATUS_MAP.not_started;
-  const priority = PRIORITY_MAP[wo.priority] ?? PRIORITY_MAP.low;
+  const pct = wo.completion_pct ?? (wo.quantity > 0 ? Math.round((wo.quantity_completed / wo.quantity) * 100) : 0);
+  const schedStatus = SCHEDULE_STATUS[wo.schedule_status] ?? SCHEDULE_STATUS.not_started;
+  const priorityInfo = PRIORITY[wo.priority] ?? PRIORITY.low;
   const barColor =
-    wo.schedule_status === 'on_track' ? 'bg-green-500' :
-    wo.schedule_status === 'at_risk'  ? 'bg-amber-500' :
-    wo.schedule_status === 'behind'   ? 'bg-red-500'   : 'bg-gray-300';
+    wo.schedule_status === 'on_track'  ? 'bg-green-500' :
+    wo.schedule_status === 'at_risk'   ? 'bg-amber-500' :
+    wo.schedule_status === 'behind'    ? 'bg-red-500'   :
+    wo.schedule_status === 'overdue'   ? 'bg-red-600'   : 'bg-gray-300';
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 space-y-3 hover:shadow-md transition-shadow">
-      {/* Header */}
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="text-xs text-gray-400 font-mono">{wo.work_order_number}</div>
           <div className="font-bold text-sm text-gray-900 leading-tight truncate">{wo.part_name}</div>
           <div className="text-xs text-gray-500">{wo.part_number}</div>
         </div>
-        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${priority.cls}`}>
-          {priority.label}
+        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${priorityInfo.cls}`}>
+          {priorityInfo.label}
         </span>
       </div>
-
-      {/* Progress bar */}
       <div>
         <div className="flex justify-between items-center mb-1">
-          <span className="text-xs text-gray-500">{wo.quantity_completed} / {wo.quantity_total} units</span>
+          <span className="text-xs text-gray-500">{wo.quantity_completed} / {wo.quantity} units</span>
           <span className="text-xs font-semibold text-gray-900">{pct}%</span>
         </div>
         <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
           <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${pct}%` }} />
         </div>
       </div>
-
-      {/* Status + Takt + ETA */}
       <div className="flex items-center gap-2 flex-wrap">
-        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${status.cls}`}>{status.label}</span>
+        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${schedStatus.cls}`}>{schedStatus.label}</span>
         <span className="text-xs text-gray-400">|</span>
         <span className="text-xs text-gray-600 flex items-center gap-1">
           <Clock size={10} className="flex-shrink-0" />
-          Takt: {wo.takt_time}m
+          {wo.takt_time_minutes}m takt
         </span>
         <span className="text-xs text-gray-400">|</span>
         <span className="text-xs text-gray-600">ETA: {calcETA(wo)}</span>
       </div>
-
-      {/* Schedule */}
       <div className="flex items-center gap-1.5 text-xs text-gray-400">
         <ChevronRight size={10} />
         {formatDate(wo.scheduled_start)} – {formatDate(wo.scheduled_end)}
-        <span className="ml-auto text-gray-500">{wo.department}</span>
+        {wo.department_name && (
+          <span
+            className="ml-auto text-xs font-medium px-2 py-0.5 rounded-full"
+            style={{ backgroundColor: (wo.department_color || '#6b7280') + '22', color: wo.department_color || '#6b7280' }}
+          >
+            {wo.department_name}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function QuickStat({ icon, bg, label, value, sub }: {
+  icon: React.ReactNode; bg: string; label: string; value: string | number; sub?: string;
+}) {
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 flex items-center gap-3">
+      <div className={`w-10 h-10 ${bg} rounded-lg flex items-center justify-center flex-shrink-0`}>{icon}</div>
+      <div>
+        <div className="text-2xl font-bold text-gray-900 leading-none">{value}</div>
+        <div className="text-xs text-gray-500 mt-0.5">{label}</div>
+        {sub && <div className="text-xs text-gray-400 mt-0.5">{sub}</div>}
       </div>
     </div>
   );
@@ -200,12 +225,8 @@ export default function ManagerView() {
   const load = useCallback(async (showSpinner = false) => {
     if (showSpinner) setRefreshing(true);
     try {
-      const [mvData, woData] = await Promise.all([
-        (api as any).getManagerView(),
-        (api as any).getWorkOrders(),
-      ]);
-      // merge: manager view already has work_orders but we prefer the richer endpoint
-      setData({ ...mvData, work_orders: woData ?? mvData.work_orders ?? [] });
+      const mvData = await api.getManagerView();
+      setData(mvData);
     } catch {
       // keep stale
     } finally {
@@ -220,24 +241,19 @@ export default function ManagerView() {
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [load]);
 
-  const departments = [ALL_DEPARTMENTS, ...Array.from(new Set((data?.work_orders ?? []).map(wo => wo.department).filter(Boolean)))];
+  const workOrders: WorkOrder[] = data?.work_orders ?? [];
+  const activeCompletions: ActiveCompletion[] = data?.active_completions ?? [];
+  const deptStats: DeptStat[] = data?.department_stats ?? [];
 
-  const filteredWOs = (data?.work_orders ?? []).filter(wo =>
-    activeDept === ALL_DEPARTMENTS || wo.department === activeDept
+  const departments = [ALL_DEPARTMENTS, ...Array.from(new Set(workOrders.map(wo => wo.department_name).filter(Boolean) as string[]))];
+
+  const filteredWOs = workOrders.filter(wo =>
+    activeDept === ALL_DEPARTMENTS || wo.department_name === activeDept
   );
 
-  const activeCompletions = data?.active_completions ?? [];
-  const deptStats = data?.department_stats ?? [];
-
-  // Aggregate quick stats
-  const totalActive = activeCompletions.length;
-  const completionsToday = deptStats.reduce((sum, d) => sum + d.completions_today, 0);
-  const avgCycleTime = deptStats.length > 0
-    ? (deptStats.reduce((s, d) => s + d.avg_cycle_time, 0) / deptStats.length).toFixed(1)
-    : '—';
-  const avgTakt = deptStats.length > 0
-    ? (deptStats.reduce((s, d) => s + d.takt_time, 0) / deptStats.length).toFixed(1)
-    : '—';
+  const totalOnTrack = deptStats.reduce((s, d) => s + d.on_track_count, 0);
+  const totalBehind = deptStats.reduce((s, d) => s + d.behind_count, 0);
+  const totalWOs = workOrders.length;
 
   return (
     <div className="min-h-screen bg-[#f8fafc] p-6 space-y-6">
@@ -269,31 +285,35 @@ export default function ManagerView() {
         </div>
       ) : (
         <>
-          {/* Quick Stats Bar */}
-          <div className="grid grid-cols-4 gap-4">
+          {/* Quick Stats */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <QuickStat
               icon={<Users size={18} className="text-blue-600" />}
               bg="bg-blue-50"
               label="Active Operators"
-              value={totalActive}
+              value={activeCompletions.length}
+              sub="currently running"
             />
             <QuickStat
-              icon={<CheckCircle2 size={18} className="text-green-600" />}
+              icon={<TrendingUp size={18} className="text-green-600" />}
               bg="bg-green-50"
-              label="Completions Today"
-              value={completionsToday}
+              label="On Track"
+              value={totalOnTrack}
+              sub="work orders"
             />
             <QuickStat
-              icon={<Clock size={18} className="text-purple-600" />}
+              icon={<TrendingDown size={18} className="text-red-500" />}
+              bg="bg-red-50"
+              label="Behind / At Risk"
+              value={totalBehind}
+              sub="work orders"
+            />
+            <QuickStat
+              icon={<Package size={18} className="text-purple-600" />}
               bg="bg-purple-50"
-              label="Avg Cycle Time"
-              value={`${avgCycleTime}m`}
-            />
-            <QuickStat
-              icon={<TrendingUp size={18} className="text-orange-600" />}
-              bg="bg-orange-50"
-              label="Target Takt Time"
-              value={`${avgTakt}m`}
+              label="Total Work Orders"
+              value={totalWOs}
+              sub="in schedule"
             />
           </div>
 
@@ -307,8 +327,8 @@ export default function ManagerView() {
               </span>
             </div>
             {activeCompletions.length === 0 ? (
-              <div className="bg-white rounded-xl border border-gray-200 shadow-sm py-8 text-center text-gray-400 text-sm">
-                <Zap size={24} className="mx-auto mb-2 text-gray-300" />
+              <div className="bg-white rounded-xl border border-gray-200 shadow-sm py-10 text-center text-gray-400 text-sm">
+                <Zap size={28} className="mx-auto mb-2 text-gray-300" />
                 No active runs at the moment
               </div>
             ) : (
@@ -333,6 +353,11 @@ export default function ManagerView() {
                 }`}
               >
                 {dept}
+                {dept !== ALL_DEPARTMENTS && (
+                  <span className="ml-1 text-gray-400">
+                    ({workOrders.filter(wo => wo.department_name === dept).length})
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -351,7 +376,7 @@ export default function ManagerView() {
                 No work orders found
               </div>
             ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4">
                 {filteredWOs.map(wo => (
                   <WorkOrderCard key={wo.id} wo={wo} />
                 ))}
@@ -363,43 +388,56 @@ export default function ManagerView() {
           {deptStats.length > 0 && (
             <section>
               <h2 className="text-base font-semibold text-gray-900 mb-3">Department Summary</h2>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 {deptStats.map(dept => {
-                  const cycleVsTakt = dept.takt_time > 0 ? dept.avg_cycle_time / dept.takt_time : 0;
+                  const onTrackPct = dept.total_work_orders > 0
+                    ? Math.round((dept.on_track_count / dept.total_work_orders) * 100) : 0;
                   const statusColor =
-                    cycleVsTakt <= 1    ? 'text-green-600 bg-green-50' :
-                    cycleVsTakt <= 1.1  ? 'text-amber-600 bg-amber-50' : 'text-red-600 bg-red-50';
-                  const barColor =
-                    cycleVsTakt <= 1    ? 'bg-green-500' :
-                    cycleVsTakt <= 1.1  ? 'bg-amber-500' : 'bg-red-500';
+                    onTrackPct >= 75 ? 'text-green-600 bg-green-50 border-green-200' :
+                    onTrackPct >= 50 ? 'text-amber-600 bg-amber-50 border-amber-200' :
+                    'text-red-600 bg-red-50 border-red-200';
                   return (
-                    <div key={dept.department} className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+                    <div key={dept.id} className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
                       <div className="flex items-start justify-between mb-3">
-                        <div className="font-semibold text-gray-900">{dept.department}</div>
-                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${statusColor}`}>
-                          {dept.active_operators} active
+                        <div>
+                          <div
+                            className="w-2.5 h-2.5 rounded-full inline-block mr-2"
+                            style={{ backgroundColor: dept.color }}
+                          />
+                          <span className="font-semibold text-gray-900 text-sm">{dept.name}</span>
+                          {dept.manager_name && (
+                            <div className="text-xs text-gray-400 mt-0.5">{dept.manager_name}</div>
+                          )}
+                        </div>
+                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${statusColor}`}>
+                          {dept.active_count} active
                         </span>
                       </div>
-                      <div className="grid grid-cols-2 gap-3 text-sm mb-3">
+                      <div className="grid grid-cols-3 gap-2 text-center mb-3">
                         <div>
-                          <div className="text-xs text-gray-400">Completions Today</div>
-                          <div className="font-bold text-gray-900">{dept.completions_today}</div>
+                          <div className="text-lg font-bold text-gray-900">{dept.on_track_count}</div>
+                          <div className="text-xs text-gray-400">On Track</div>
                         </div>
                         <div>
-                          <div className="text-xs text-gray-400">Avg Cycle vs Takt</div>
-                          <div className="font-bold text-gray-900">{dept.avg_cycle_time.toFixed(1)}m / {dept.takt_time}m</div>
+                          <div className="text-lg font-bold text-amber-600">{dept.behind_count}</div>
+                          <div className="text-xs text-gray-400">Behind</div>
+                        </div>
+                        <div>
+                          <div className="text-lg font-bold text-gray-900">{dept.total_work_orders}</div>
+                          <div className="text-xs text-gray-400">Total WOs</div>
                         </div>
                       </div>
                       <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
                         <div
-                          className={`h-full rounded-full ${barColor}`}
-                          style={{ width: `${Math.min(100, cycleVsTakt * 100)}%` }}
+                          className={`h-full rounded-full ${onTrackPct >= 75 ? 'bg-green-500' : onTrackPct >= 50 ? 'bg-amber-500' : 'bg-red-500'}`}
+                          style={{ width: `${onTrackPct}%` }}
                         />
                       </div>
-                      {cycleVsTakt > 1 && (
+                      <div className="text-xs text-gray-400 mt-1 text-right">{onTrackPct}% on track</div>
+                      {dept.behind_count > 0 && (
                         <div className="flex items-center gap-1.5 mt-2 text-xs text-red-500">
                           <AlertTriangle size={11} />
-                          {((cycleVsTakt - 1) * 100).toFixed(0)}% over takt
+                          {dept.behind_count} WO{dept.behind_count > 1 ? 's' : ''} behind schedule
                         </div>
                       )}
                     </div>
@@ -410,23 +448,6 @@ export default function ManagerView() {
           )}
         </>
       )}
-    </div>
-  );
-}
-
-function QuickStat({ icon, bg, label, value }: {
-  icon: React.ReactNode;
-  bg: string;
-  label: string;
-  value: string | number;
-}) {
-  return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 flex items-center gap-3">
-      <div className={`w-9 h-9 ${bg} rounded-lg flex items-center justify-center flex-shrink-0`}>{icon}</div>
-      <div>
-        <div className="text-xl font-bold text-gray-900">{value}</div>
-        <div className="text-xs text-gray-500">{label}</div>
-      </div>
     </div>
   );
 }

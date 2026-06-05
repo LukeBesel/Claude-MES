@@ -13,12 +13,16 @@ import PlantView from './pages/PlantView';
 import ManagerView from './pages/ManagerView';
 import CompletionDetail from './pages/CompletionDetail';
 import AppHistory from './pages/AppHistory';
+import StepMetrics from './pages/StepMetrics';
+import CapacityPlanning from './pages/CapacityPlanning';
+import OperatorPortal from './pages/OperatorPortal';
 
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
         <Route path="/play/:id" element={<AppPlayer />} />
+        <Route path="/operator" element={<OperatorPortal />} />
         <Route path="/" element={<Layout />}>
           <Route index element={<Dashboard />} />
           <Route path="apps" element={<AppsLibrary />} />
@@ -31,6 +35,8 @@ export default function App() {
           <Route path="schedule" element={<Schedule />} />
           <Route path="plant" element={<PlantView />} />
           <Route path="manager" element={<ManagerView />} />
+          <Route path="step-metrics" element={<StepMetrics />} />
+          <Route path="capacity" element={<CapacityPlanning />} />
           <Route path="completions/:id" element={<CompletionDetail />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
