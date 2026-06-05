@@ -12,6 +12,20 @@ router.get('/', (req, res) => {
 router.post('/', (req, res) => {
   const { name, description = '' } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
+
+  // Plan limit check
+  const plan = db.prepare('SELECT * FROM plan WHERE id = 1').get();
+  if (plan && plan.tier === 'free' && plan.app_limit > 0) {
+    const appCount = db.prepare('SELECT COUNT(*) as c FROM apps').get().c;
+    if (appCount >= plan.app_limit) {
+      return res.status(402).json({
+        error: 'plan_limit',
+        message: `Your free plan is limited to ${plan.app_limit} apps. Upgrade to Pro for unlimited apps.`,
+        limit: plan.app_limit, current: appCount,
+      });
+    }
+  }
+
   const id = uuidv4();
   const defaultStep = [{ id: uuidv4(), name: 'Step 1', order: 0, widgets: [] }];
   db.prepare('INSERT INTO apps (id, name, description, steps) VALUES (?, ?, ?, ?)').run(id, name, description, JSON.stringify(defaultStep));

@@ -97,6 +97,15 @@
   @apply absolute h-full rounded-lg opacity-90 transition-all;
 }
 
+/* NCR critical severity pulsing left-border */
+@keyframes ncr-critical-flash {
+  0%, 100% { border-left-color: #ef4444; }
+  50% { border-left-color: #fca5a5; }
+}
+.ncr-critical-pulse {
+  animation: ncr-critical-flash 1.2s ease-in-out infinite;
+}
+
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { @apply bg-transparent; }
 ::-webkit-scrollbar-thumb { @apply bg-gray-200 rounded-full hover:bg-gray-300; }

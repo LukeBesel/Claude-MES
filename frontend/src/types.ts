@@ -90,6 +90,7 @@ export interface WorkOrder {
 }
 
 // ── OEE ───────────────────────────────────────────────────────────────────────
+
 export type MachineStatus = 'running' | 'down' | 'maintenance' | 'idle';
 
 export interface OEEStats {
@@ -107,25 +108,21 @@ export interface OEEMachine {
 
 export interface MachineEvent {
   id: string; station_id: string;
-  event_type: 'up' | 'down' | 'maintenance' | 'idle';
+  event_type: 'up' | 'running' | 'down' | 'maintenance' | 'idle';
   reason: string; started_at: string; ended_at: string | null; duration_minutes: number | null;
 }
 
 // ── Dashboards ────────────────────────────────────────────────────────────────
+
 export type DashboardCardType = 'metric' | 'time_series' | 'distribution' | 'leaderboard' | 'wo_status' | 'table';
 
 export interface DashboardCard {
   id: string; type: DashboardCardType; title: string;
   app_id?: string | null; period_days?: number;
-  // metric
   metric_key?: string;
-  // time_series
   series?: string;
-  // distribution
   group_by?: string;
-  // leaderboard
   leaderboard_metric?: string; limit?: number;
-  // layout
   size?: 'sm' | 'md' | 'lg' | 'xl';
   color?: string;
 }
@@ -136,14 +133,125 @@ export interface Dashboard {
 }
 
 export interface ProductType {
-  id: string;
-  app_id: string;
-  name: string;
-  description: string;
+  id: string; app_id: string; name: string; description: string;
   takt_overrides: Record<string, number>;
-  created_at: string;
-  updated_at: string;
+  created_at: string; updated_at: string;
 }
+
+// ── Inventory ─────────────────────────────────────────────────────────────────
+
+export interface InventoryItem {
+  id: string; sku: string; name: string; description: string;
+  category: string; unit_of_measure: string; unit_cost: number;
+  reorder_point: number; reorder_qty: number; lead_time_days: number;
+  is_active: number; total_quantity: number; total_value?: number;
+  stock_by_location?: StockByLocation[];
+  created_at: string; updated_at: string;
+}
+
+export interface StockByLocation {
+  location_id: string; location_name: string; location_code: string; quantity: number; updated_at: string;
+}
+
+export interface InventoryLocation {
+  id: string; name: string; code: string; description: string;
+  type: string; is_active: number; item_count?: number; total_units?: number;
+  created_at: string;
+}
+
+export type MovementType = 'receive' | 'consume' | 'adjust' | 'transfer' | 'ship' | 'scrap' | 'return';
+
+export interface StockMovement {
+  id: string; item_id: string; location_id: string | null;
+  movement_type: MovementType; quantity: number; unit_cost: number;
+  reference_type: string; reference_id: string;
+  notes: string; operator_name: string;
+  item_name?: string; sku?: string; location_name?: string; location_code?: string;
+  created_at: string;
+}
+
+export interface InventorySummary {
+  total_items: number; total_value: number; low_stock: number;
+  categories: string[]; today_receives: number; today_consumes: number;
+}
+
+// ── Purchasing ────────────────────────────────────────────────────────────────
+
+export interface Vendor {
+  id: string; name: string; code: string; contact_name: string;
+  email: string; phone: string; address: string;
+  payment_terms: string; lead_time_days: number; rating: number;
+  notes: string; is_active: number; po_count?: number;
+  created_at: string; updated_at: string;
+}
+
+export type POStatus = 'draft' | 'sent' | 'partial' | 'received' | 'cancelled';
+
+export interface POLine {
+  id: string; po_id: string; item_id: string;
+  quantity_ordered: number; quantity_received: number; unit_cost: number;
+  notes: string; item_name?: string; sku?: string; unit_of_measure?: string;
+}
+
+export interface PurchaseOrder {
+  id: string; po_number: string; vendor_id: string; status: POStatus;
+  order_date: string; expected_date: string | null; received_date: string | null;
+  shipping_cost: number; notes: string;
+  vendor_name?: string; vendor_code?: string;
+  lines?: POLine[]; total_amount?: number; total_received?: number;
+  created_at: string; updated_at: string;
+}
+
+// ── Quality / NCRs ────────────────────────────────────────────────────────────
+
+export type NCRSeverity = 'minor' | 'major' | 'critical';
+export type NCRStatus   = 'open' | 'investigating' | 'resolved' | 'closed';
+export type NCRSource   = 'production' | 'receiving' | 'customer' | 'audit' | 'internal';
+
+export interface NCR {
+  id: string; ncr_number: string; title: string; description: string;
+  severity: NCRSeverity; status: NCRStatus; source: NCRSource;
+  app_id: string | null; completion_id: string | null;
+  work_order_id: string | null; item_id: string | null;
+  assigned_to: string; root_cause: string; corrective_action: string;
+  due_date: string | null; resolved_at: string | null;
+  app_name?: string; work_order_number?: string; item_name?: string; item_sku?: string;
+  comment_count?: number; comments?: NCRComment[];
+  created_at: string; updated_at: string;
+}
+
+export interface NCRComment {
+  id: string; ncr_id: string; author: string; body: string; created_at: string;
+}
+
+export interface QualitySummary {
+  total: number; open: number; investigating: number; resolved: number; closed: number;
+  critical: number; overdue: number;
+  by_source: { source: string; count: number }[];
+  by_severity: { severity: string; count: number }[];
+}
+
+// ── Plan ──────────────────────────────────────────────────────────────────────
+
+export type PlanTier = 'free' | 'pro' | 'enterprise';
+
+export interface Plan {
+  id: number; tier: PlanTier; app_limit: number; dashboard_limit: number;
+  app_count: number; dashboard_count: number; completion_count: number;
+  features: string[]; all_features: Record<string, string[]>;
+  created_at: string; updated_at: string;
+}
+
+// ── Company settings ──────────────────────────────────────────────────────────
+
+export interface CompanySettings {
+  company_name?: string; company_industry?: string; company_address?: string;
+  company_phone?: string; company_email?: string; timezone?: string;
+  date_format?: string; currency?: string; logo_url?: string; fiscal_year_start?: string;
+  [key: string]: string | undefined;
+}
+
+// ── Analytics ─────────────────────────────────────────────────────────────────
 
 export interface AnalyticsOverview {
   totalCompletions: number; todayCompletions: number; inProgress: number;

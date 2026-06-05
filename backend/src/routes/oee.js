@@ -122,9 +122,11 @@ router.post('/:id/event', (req, res) => {
   const station = db.prepare('SELECT * FROM stations WHERE id = ?').get(req.params.id);
   if (!station) return res.status(404).json({ error: 'Not found' });
 
-  const { event_type, reason = '' } = req.body;
-  const validTypes = ['up', 'down', 'maintenance', 'idle'];
-  if (!validTypes.includes(event_type)) {
+  const { event_type: rawEventType, reason = '' } = req.body;
+  // Accept 'running' as alias for 'up'
+  const event_type = rawEventType === 'running' ? 'up' : rawEventType;
+  const validTypes = ['up', 'running', 'down', 'maintenance', 'idle'];
+  if (!validTypes.includes(rawEventType)) {
     return res.status(400).json({ error: `event_type must be one of: ${validTypes.join(', ')}` });
   }
 

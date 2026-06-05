@@ -14,6 +14,20 @@ router.get('/', (req, res) => {
 router.post('/', (req, res) => {
   const { name, description = '', cards = [] } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
+
+  // Plan limit check
+  const plan = db.prepare('SELECT * FROM plan WHERE id = 1').get();
+  if (plan && plan.tier === 'free' && plan.dashboard_limit > 0) {
+    const count = db.prepare('SELECT COUNT(*) as c FROM dashboards').get().c;
+    if (count >= plan.dashboard_limit) {
+      return res.status(402).json({
+        error: 'plan_limit',
+        message: `Your free plan is limited to ${plan.dashboard_limit} dashboards. Upgrade to Pro for unlimited dashboards.`,
+        limit: plan.dashboard_limit, current: count,
+      });
+    }
+  }
+
   const id = uuidv4();
   db.prepare(`INSERT INTO dashboards (id, name, description, cards) VALUES (?, ?, ?, ?)`)
     .run(id, name, description, JSON.stringify(cards));

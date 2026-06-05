@@ -3,42 +3,65 @@ import { Outlet, NavLink, Link } from 'react-router-dom';
 import {
   LayoutDashboard, AppWindow, Database, BarChart3, Monitor,
   Calendar, Settings, Activity, Building2, ClipboardList,
-  Tablet, Timer, Users, Cpu, LayoutGrid, ChevronLeft, ChevronRight
+  Tablet, Timer, Users, Cpu, LayoutGrid, ChevronLeft, ChevronRight,
+  Package, ShoppingCart, ShieldCheck,
 } from 'lucide-react';
+import { usePlan } from '../../context/PlanContext';
 
 const NAV = [
   {
     group: 'Operations',
     items: [
-      { to: '/', icon: LayoutDashboard, label: 'Dashboard', exact: true },
-      { to: '/apps', icon: AppWindow, label: 'App Library' },
-      { to: '/schedule', icon: Calendar, label: 'Schedule' },
-      { to: '/operator', icon: Tablet, label: 'Operator Portal' },
+      { to: '/',         icon: LayoutDashboard, label: 'Command Center',  exact: true },
+      { to: '/apps',     icon: AppWindow,       label: 'App Library' },
+      { to: '/schedule', icon: Calendar,        label: 'Schedule' },
     ]
   },
   {
     group: 'Monitoring',
     items: [
-      { to: '/plant', icon: Building2, label: 'Plant View' },
-      { to: '/manager', icon: ClipboardList, label: 'Manager View' },
-      { to: '/oee', icon: Cpu, label: 'OEE Tracker' },
-      { to: '/stations', icon: Monitor, label: 'Stations' },
+      { to: '/plant',    icon: Building2,       label: 'Plant View' },
+      { to: '/manager',  icon: ClipboardList,   label: 'Manager View' },
+      { to: '/oee',      icon: Cpu,             label: 'OEE Tracker' },
+      { to: '/stations', icon: Monitor,         label: 'Stations' },
     ]
   },
   {
-    group: 'Analytics & Reports',
+    group: 'Inventory & Supply',
     items: [
-      { to: '/dashboards', icon: LayoutGrid, label: 'Dashboards' },
-      { to: '/step-metrics', icon: Timer, label: 'Step Metrics' },
-      { to: '/capacity', icon: Users, label: 'Capacity Plan' },
-      { to: '/analytics', icon: BarChart3, label: 'Analytics' },
-      { to: '/tables', icon: Database, label: 'Tables' },
+      { to: '/inventory',  icon: Package,      label: 'Inventory',   proOnly: true },
+      { to: '/purchasing', icon: ShoppingCart, label: 'Purchasing',  proOnly: true },
+    ]
+  },
+  {
+    group: 'Quality',
+    items: [
+      { to: '/quality', icon: ShieldCheck, label: 'NCR / Quality', proOnly: true },
+    ]
+  },
+  {
+    group: 'Analytics',
+    items: [
+      { to: '/dashboards',   icon: LayoutGrid, label: 'Dashboards' },
+      { to: '/step-metrics', icon: Timer,      label: 'Step Metrics' },
+      { to: '/capacity',     icon: Users,      label: 'Capacity Plan' },
+      { to: '/analytics',    icon: BarChart3,  label: 'Analytics' },
+      { to: '/tables',       icon: Database,   label: 'Tables' },
     ]
   },
 ];
 
+function ProBadge() {
+  return (
+    <span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 leading-none">
+      PRO
+    </span>
+  );
+}
+
 export default function Layout() {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('hm_sidebar') === 'collapsed');
+  const { isFree } = usePlan();
 
   useEffect(() => {
     localStorage.setItem('hm_sidebar', collapsed ? 'collapsed' : 'open');
@@ -48,12 +71,10 @@ export default function Layout() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50">
-      {/* Sidebar */}
       <aside
         className={`${sidebarW} flex-shrink-0 flex flex-col transition-all duration-200`}
         style={{ backgroundColor: 'var(--sidebar-bg)' }}
       >
-        {/* Logo */}
         <Link
           to="/"
           className={`flex items-center border-b border-white/10 hover:bg-white/5 transition-colors flex-shrink-0 ${collapsed ? 'justify-center p-3' : 'gap-3 p-4'}`}
@@ -72,7 +93,6 @@ export default function Layout() {
           )}
         </Link>
 
-        {/* Nav */}
         <nav className="flex-1 p-2 overflow-y-auto space-y-4 mt-1">
           {NAV.map(({ group, items }) => (
             <div key={group}>
@@ -80,33 +100,45 @@ export default function Layout() {
                 <div className="text-[10px] font-semibold uppercase tracking-widest text-gray-500 px-3 mb-1.5">{group}</div>
               )}
               <div className="space-y-0.5">
-                {items.map(({ to, icon: Icon, label, exact }) => (
-                  <NavLink
-                    key={to}
-                    to={to}
-                    end={exact}
-                    title={collapsed ? label : undefined}
-                    className={({ isActive }) =>
-                      `flex items-center rounded-xl text-sm font-medium transition-all ${
-                        collapsed ? 'justify-center p-2.5' : 'gap-2.5 px-3 py-2.5'
-                      } ${
-                        isActive
-                          ? 'text-white shadow-sm'
-                          : 'text-gray-400 hover:text-white hover:bg-white/8'
-                      }`
-                    }
-                    style={({ isActive }) => isActive ? { backgroundColor: 'var(--nav-active)' } : {}}
-                  >
-                    <Icon size={15} className="flex-shrink-0" />
-                    {!collapsed && label}
-                  </NavLink>
-                ))}
+                {items.map((item) => {
+                  const { to, icon: Icon, label } = item;
+                  const exact = 'exact' in item ? item.exact : undefined;
+                  const proOnly = 'proOnly' in item ? item.proOnly : false;
+                  const isLocked = proOnly && isFree;
+                  return (
+                    <NavLink
+                      key={to}
+                      to={to}
+                      end={exact}
+                      title={collapsed ? label : undefined}
+                      className={({ isActive }) =>
+                        `flex items-center rounded-xl text-sm font-medium transition-all ${
+                          collapsed ? 'justify-center p-2.5' : 'gap-2.5 px-3 py-2.5'
+                        } ${
+                          isLocked
+                            ? 'text-gray-600 hover:text-gray-500 hover:bg-white/5'
+                            : isActive
+                              ? 'text-white shadow-sm'
+                              : 'text-gray-400 hover:text-white hover:bg-white/8'
+                        }`
+                      }
+                      style={({ isActive }) => (!isLocked && isActive) ? { backgroundColor: 'var(--nav-active)' } : {}}
+                    >
+                      <Icon size={15} className="flex-shrink-0" />
+                      {!collapsed && (
+                        <>
+                          <span className="flex-1">{label}</span>
+                          {isLocked && <ProBadge />}
+                        </>
+                      )}
+                    </NavLink>
+                  );
+                })}
               </div>
             </div>
           ))}
         </nav>
 
-        {/* Footer */}
         <div className="p-2 border-t border-white/10 flex-shrink-0">
           <NavLink
             to="/settings"
@@ -122,7 +154,6 @@ export default function Layout() {
             {!collapsed && 'Settings'}
           </NavLink>
 
-          {/* Collapse toggle */}
           <button
             onClick={() => setCollapsed(c => !c)}
             title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
@@ -136,13 +167,12 @@ export default function Layout() {
           {!collapsed && (
             <div className="mt-2 px-3 py-2.5 rounded-xl bg-white/5">
               <div className="text-[10px] text-gray-500 mb-0.5">Version</div>
-              <div className="text-xs text-gray-400 font-medium">HartMonitor v2.0</div>
+              <div className="text-xs text-gray-400 font-medium">HartMonitor v3.0</div>
             </div>
           )}
         </div>
       </aside>
 
-      {/* Main */}
       <main className="flex-1 overflow-auto">
         <Outlet />
       </main>
