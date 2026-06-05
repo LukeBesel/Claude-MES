@@ -8,6 +8,11 @@ import Tables from './pages/Tables';
 import TableDetail from './pages/TableDetail';
 import Analytics from './pages/Analytics';
 import Stations from './pages/Stations';
+import Schedule from './pages/Schedule';
+import PlantView from './pages/PlantView';
+import ManagerView from './pages/ManagerView';
+import CompletionDetail from './pages/CompletionDetail';
+import AppHistory from './pages/AppHistory';
 
 export default function App() {
   return (
@@ -18,10 +23,15 @@ export default function App() {
           <Route index element={<Dashboard />} />
           <Route path="apps" element={<AppsLibrary />} />
           <Route path="apps/:id/build" element={<AppBuilder />} />
+          <Route path="apps/:id/history" element={<AppHistory />} />
           <Route path="tables" element={<Tables />} />
           <Route path="tables/:id" element={<TableDetail />} />
           <Route path="analytics" element={<Analytics />} />
           <Route path="stations" element={<Stations />} />
+          <Route path="schedule" element={<Schedule />} />
+          <Route path="plant" element={<PlantView />} />
+          <Route path="manager" element={<ManagerView />} />
+          <Route path="completions/:id" element={<CompletionDetail />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

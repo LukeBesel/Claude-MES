@@ -1,15 +1,18 @@
 const express = require('express');
 const db = require('../db');
+const { calcScheduleStatus } = require('./workorders');
 
 const router = express.Router();
 
+// ─── GET /overview ────────────────────────────────────────────────────────────
+
 router.get('/overview', (req, res) => {
-  const totalCompletions = db.prepare("SELECT COUNT(*) as c FROM completions WHERE status='completed'").get().c;
-  const todayCompletions = db.prepare("SELECT COUNT(*) as c FROM completions WHERE status='completed' AND date(completed_at)=date('now')").get().c;
-  const inProgress = db.prepare("SELECT COUNT(*) as c FROM completions WHERE status='in_progress'").get().c;
-  const totalApps = db.prepare("SELECT COUNT(*) as c FROM apps").get().c;
-  const publishedApps = db.prepare("SELECT COUNT(*) as c FROM apps WHERE status='published'").get().c;
-  const activeStations = db.prepare("SELECT COUNT(*) as c FROM stations WHERE status='active'").get().c;
+  const totalCompletions  = db.prepare("SELECT COUNT(*) as c FROM completions WHERE status='completed'").get().c;
+  const todayCompletions  = db.prepare("SELECT COUNT(*) as c FROM completions WHERE status='completed' AND date(completed_at)=date('now')").get().c;
+  const inProgress        = db.prepare("SELECT COUNT(*) as c FROM completions WHERE status='in_progress'").get().c;
+  const totalApps         = db.prepare("SELECT COUNT(*) as c FROM apps").get().c;
+  const publishedApps     = db.prepare("SELECT COUNT(*) as c FROM apps WHERE status='published'").get().c;
+  const activeStations    = db.prepare("SELECT COUNT(*) as c FROM stations WHERE status='active'").get().c;
 
   const cycleTimeResult = db.prepare(`
     SELECT AVG((julianday(completed_at) - julianday(started_at)) * 24 * 60) as avg_minutes
@@ -17,10 +20,7 @@ router.get('/overview', (req, res) => {
   `).get();
   const avgCycleTime = cycleTimeResult?.avg_minutes ? Math.round(cycleTimeResult.avg_minutes) : 0;
 
-  const passFailData = db.prepare(`
-    SELECT data FROM completions WHERE status='completed' LIMIT 500
-  `).all();
-
+  const passFailData = db.prepare(`SELECT data FROM completions WHERE status='completed' LIMIT 500`).all();
   let passCount = 0, failCount = 0;
   for (const row of passFailData) {
     const data = JSON.parse(row.data);
@@ -28,20 +28,13 @@ router.get('/overview', (req, res) => {
     if (vals.some(v => v === 'Pass')) passCount++;
     if (vals.some(v => v === 'Fail')) failCount++;
   }
-  const totalQC = passCount + failCount;
+  const totalQC  = passCount + failCount;
   const passRate = totalQC > 0 ? Math.round((passCount / totalQC) * 100) : 0;
 
-  res.json({
-    totalCompletions,
-    todayCompletions,
-    inProgress,
-    totalApps,
-    publishedApps,
-    activeStations,
-    avgCycleTime,
-    passRate,
-  });
+  res.json({ totalCompletions, todayCompletions, inProgress, totalApps, publishedApps, activeStations, avgCycleTime, passRate });
 });
+
+// ─── GET /throughput ──────────────────────────────────────────────────────────
 
 router.get('/throughput', (req, res) => {
   const { days = 30 } = req.query;
@@ -54,6 +47,8 @@ router.get('/throughput', (req, res) => {
   `).all(parseInt(days));
   res.json(rows);
 });
+
+// ─── GET /cycle-times ─────────────────────────────────────────────────────────
 
 router.get('/cycle-times', (req, res) => {
   const { days = 30 } = req.query;
@@ -72,6 +67,8 @@ router.get('/cycle-times', (req, res) => {
   res.json(rows);
 });
 
+// ─── GET /operator-performance ────────────────────────────────────────────────
+
 router.get('/operator-performance', (req, res) => {
   const rows = db.prepare(`
     SELECT
@@ -87,6 +84,8 @@ router.get('/operator-performance', (req, res) => {
   res.json(rows);
 });
 
+// ─── GET /app-performance ─────────────────────────────────────────────────────
+
 router.get('/app-performance', (req, res) => {
   const rows = db.prepare(`
     SELECT
@@ -101,6 +100,8 @@ router.get('/app-performance', (req, res) => {
   `).all();
   res.json(rows);
 });
+
+// ─── GET /quality ─────────────────────────────────────────────────────────────
 
 router.get('/quality', (req, res) => {
   const { days = 30 } = req.query;
@@ -120,6 +121,233 @@ router.get('/quality', (req, res) => {
     else byDate[row.date].pass++;
   }
   res.json(Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date)));
+});
+
+// ─── GET /manager-view ────────────────────────────────────────────────────────
+
+router.get('/manager-view', (req, res) => {
+  // Active (in-progress) completions joined with app and work order info
+  const activeCompletions = db.prepare(`
+    SELECT
+      c.id, c.app_id, c.app_name, c.station_id, c.operator_name,
+      c.started_at, c.status, c.work_order_id,
+      a.name AS app_name_joined,
+      wo.work_order_number, wo.part_name, wo.part_number,
+      wo.quantity, wo.quantity_completed, wo.status AS wo_status,
+      wo.priority, wo.department_id,
+      d.name AS department_name, d.color AS department_color
+    FROM completions c
+    LEFT JOIN apps        a  ON a.id  = c.app_id
+    LEFT JOIN work_orders wo ON wo.id = c.work_order_id
+    LEFT JOIN departments d  ON d.id  = wo.department_id
+    WHERE c.status = 'in_progress'
+    ORDER BY c.started_at DESC
+  `).all();
+
+  // All non-cancelled work orders enriched with schedule_status
+  const allWorkOrders = db.prepare(`
+    SELECT
+      wo.*,
+      d.name  AS department_name,
+      d.color AS department_color,
+      a.name  AS app_name
+    FROM work_orders wo
+    LEFT JOIN departments d ON d.id = wo.department_id
+    LEFT JOIN apps        a ON a.id = wo.app_id
+    WHERE wo.status != 'cancelled'
+    ORDER BY wo.priority DESC, wo.scheduled_end ASC
+  `).all();
+
+  const workOrders = allWorkOrders.map(wo => ({
+    ...wo,
+    schedule_status: calcScheduleStatus(wo),
+    completion_pct: wo.quantity > 0 ? Math.round((wo.quantity_completed / wo.quantity) * 100) : 0,
+  }));
+
+  // Per-department stats
+  const depts = db.prepare('SELECT * FROM departments').all();
+  const departmentStats = depts.map(dept => {
+    const deptWOs = workOrders.filter(wo => wo.department_id === dept.id);
+    const activeCount   = deptWOs.filter(wo => wo.status === 'in_progress').length;
+    const onTrackCount  = deptWOs.filter(wo => wo.schedule_status === 'on_track').length;
+    const behindCount   = deptWOs.filter(wo => ['behind', 'overdue'].includes(wo.schedule_status)).length;
+    return {
+      id:           dept.id,
+      name:         dept.name,
+      color:        dept.color,
+      manager_name: dept.manager_name,
+      active_count: activeCount,
+      on_track_count: onTrackCount,
+      behind_count: behindCount,
+      total_work_orders: deptWOs.length,
+    };
+  });
+
+  res.json({
+    active_completions: activeCompletions,
+    work_orders:        workOrders,
+    department_stats:   departmentStats,
+  });
+});
+
+// ─── GET /plant-view ──────────────────────────────────────────────────────────
+
+router.get('/plant-view', (req, res) => {
+  // KPIs
+  const totalCompleted = db.prepare("SELECT COUNT(*) as c FROM completions WHERE status='completed'").get().c;
+  const todayCompleted = db.prepare("SELECT COUNT(*) as c FROM completions WHERE status='completed' AND date(completed_at)=date('now')").get().c;
+  const activeNow      = db.prepare("SELECT COUNT(*) as c FROM completions WHERE status='in_progress'").get().c;
+
+  const ctRow = db.prepare(`
+    SELECT AVG((julianday(completed_at) - julianday(started_at)) * 24 * 60) as avg_minutes
+    FROM completions WHERE status='completed' AND completed_at IS NOT NULL
+  `).get();
+  const avgCycleTime = ctRow?.avg_minutes ? Math.round(ctRow.avg_minutes) : 0;
+
+  const pfRows = db.prepare("SELECT data FROM completions WHERE status='completed' LIMIT 1000").all();
+  let pass = 0, fail = 0;
+  for (const row of pfRows) {
+    const vals = Object.values(JSON.parse(row.data));
+    if (vals.some(v => v === 'Fail')) fail++;
+    else pass++;
+  }
+  const passRate = (pass + fail) > 0 ? Math.round((pass / (pass + fail)) * 100) : 0;
+
+  // Schedule adherence: % of work orders currently on_track or completed
+  const allWOs = db.prepare(`
+    SELECT wo.*, d.name AS department_name, d.color AS department_color, a.name AS app_name
+    FROM work_orders wo
+    LEFT JOIN departments d ON d.id = wo.department_id
+    LEFT JOIN apps        a ON a.id = wo.app_id
+    WHERE wo.status != 'cancelled'
+  `).all();
+
+  const woSummary = { on_track: 0, at_risk: 0, behind: 0, not_started: 0, completed: 0 };
+  for (const wo of allWOs) {
+    const ss = calcScheduleStatus(wo);
+    if (woSummary[ss] !== undefined) woSummary[ss]++;
+    else woSummary.behind++;
+  }
+  const adherenceBase = allWOs.length;
+  const scheduleAdherence = adherenceBase > 0
+    ? Math.round(((woSummary.on_track + woSummary.completed) / adherenceBase) * 100)
+    : 0;
+
+  // Department performance
+  const depts = db.prepare('SELECT * FROM departments').all();
+  const departmentPerformance = depts.map(dept => {
+    const deptWOs = allWOs.filter(wo => wo.department_id === dept.id);
+    const totalQty     = deptWOs.reduce((s, wo) => s + wo.quantity, 0);
+    const completedQty = deptWOs.reduce((s, wo) => s + wo.quantity_completed, 0);
+    const completionRate = totalQty > 0 ? Math.round((completedQty / totalQty) * 100) : 0;
+
+    const ctDept = db.prepare(`
+      SELECT AVG((julianday(c.completed_at) - julianday(c.started_at)) * 24 * 60) as avg_minutes
+      FROM completions c
+      JOIN work_orders wo ON wo.id = c.work_order_id
+      WHERE wo.department_id = ? AND c.status = 'completed' AND c.completed_at IS NOT NULL
+    `).get(dept.id);
+    const avgCycleDept = ctDept?.avg_minutes ? Math.round(ctDept.avg_minutes) : 0;
+
+    const onTrack  = deptWOs.filter(wo => calcScheduleStatus(wo) === 'on_track').length;
+    const onTrackPct = deptWOs.length > 0 ? Math.round((onTrack / deptWOs.length) * 100) : 0;
+
+    return {
+      id:               dept.id,
+      name:             dept.name,
+      color:            dept.color,
+      manager_name:     dept.manager_name,
+      completion_rate:  completionRate,
+      avg_cycle_time:   avgCycleDept,
+      on_track_pct:     onTrackPct,
+      work_order_count: deptWOs.length,
+    };
+  });
+
+  // Hourly throughput for last 24 hours
+  const hourlyThroughput = db.prepare(`
+    SELECT
+      strftime('%Y-%m-%dT%H:00:00', completed_at) as hour,
+      COUNT(*) as count
+    FROM completions
+    WHERE status = 'completed'
+      AND completed_at >= datetime('now', '-24 hours')
+    GROUP BY strftime('%Y-%m-%dT%H:00:00', completed_at)
+    ORDER BY hour ASC
+  `).all();
+
+  res.json({
+    kpis: {
+      totalCompleted,
+      todayCompleted,
+      activeNow,
+      passRate,
+      avgCycleTime,
+      scheduleAdherence,
+    },
+    department_performance: departmentPerformance,
+    hourly_throughput:      hourlyThroughput,
+    work_order_summary:     woSummary,
+  });
+});
+
+// ─── GET /completion/:id - detailed single completion with step breakdown ──────
+
+router.get('/completion/:id', (req, res) => {
+  const completion = db.prepare('SELECT * FROM completions WHERE id = ?').get(req.params.id);
+  if (!completion) return res.status(404).json({ error: 'Completion not found' });
+
+  // Fetch app steps to map step index to name and takt_time
+  const app = db.prepare('SELECT id, name, steps FROM apps WHERE id = ?').get(completion.app_id);
+  const appSteps = app ? JSON.parse(app.steps) : [];
+
+  const stepTimes       = JSON.parse(completion.step_times || '{}');
+  const taktExceeded    = JSON.parse(completion.takt_exceeded_steps || '[]');
+  const data            = JSON.parse(completion.data || '{}');
+
+  // Build per-step breakdown
+  const stepBreakdown = appSteps.map((step, idx) => {
+    const timeSeconds = stepTimes[idx] !== undefined ? stepTimes[idx] : null;
+    const taktSeconds = step.takt_time || null;
+    return {
+      step_index:    idx,
+      step_name:     step.name,
+      takt_time:     taktSeconds,
+      actual_time:   timeSeconds,
+      takt_exceeded: taktExceeded.includes(idx) || taktExceeded.includes(String(idx)),
+      pct_of_takt:   (taktSeconds && timeSeconds) ? Math.round((timeSeconds / taktSeconds) * 100) : null,
+    };
+  });
+
+  // Work order info if linked
+  let workOrder = null;
+  if (completion.work_order_id) {
+    workOrder = db.prepare(`
+      SELECT wo.*, d.name AS department_name, d.color AS department_color
+      FROM work_orders wo
+      LEFT JOIN departments d ON d.id = wo.department_id
+      WHERE wo.id = ?
+    `).get(completion.work_order_id);
+  }
+
+  // Cycle time in minutes
+  let cycleTimeMinutes = null;
+  if (completion.started_at && completion.completed_at) {
+    cycleTimeMinutes = Math.round(
+      (new Date(completion.completed_at) - new Date(completion.started_at)) / 60000
+    );
+  }
+
+  res.json({
+    ...completion,
+    data,
+    step_times:       stepTimes,
+    takt_exceeded_steps: taktExceeded,
+    step_breakdown:   stepBreakdown,
+    cycle_time_minutes: cycleTimeMinutes,
+    app_name:         app?.name || completion.app_name,
+    work_order:       workOrder,
+  });
 });
 
 module.exports = router;

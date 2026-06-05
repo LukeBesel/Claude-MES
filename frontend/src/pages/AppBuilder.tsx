@@ -672,7 +672,32 @@ function StepProperties({ step, onUpdate }: { step: Step; onUpdate: (u: (s: Step
       <Field label="Step Name">
         <input className="input-field" value={step.name} onChange={e => onUpdate(s => ({ ...s, name: e.target.value }))} />
       </Field>
-      <div className="text-xs text-gray-400">
+      <Field label="Takt Time (seconds)">
+        <div className="space-y-1">
+          <input
+            type="number"
+            className="input-field"
+            placeholder="0 = no limit"
+            value={step.takt_time_seconds || ''}
+            onChange={e => onUpdate(s => ({ ...s, takt_time_seconds: e.target.value ? parseInt(e.target.value) : undefined }))}
+            min={0}
+          />
+          {step.takt_time_seconds ? (
+            <div className="text-xs text-blue-600 font-medium">
+              ⏱ {Math.floor(step.takt_time_seconds / 60)}m {step.takt_time_seconds % 60}s — operator sees alert if exceeded
+            </div>
+          ) : (
+            <div className="text-xs text-gray-400">Set a takt time to show operators a flashing alert when exceeded</div>
+          )}
+        </div>
+      </Field>
+      <Field label="Step Description">
+        <textarea className="input-field resize-none text-xs" rows={2}
+          value={step.description || ''}
+          placeholder="Optional notes for this step..."
+          onChange={e => onUpdate(s => ({ ...s, description: e.target.value }))} />
+      </Field>
+      <div className="text-xs text-gray-400 bg-gray-50 rounded-lg px-3 py-2">
         {step.widgets.length} widget{step.widgets.length !== 1 ? 's' : ''}
       </div>
     </div>

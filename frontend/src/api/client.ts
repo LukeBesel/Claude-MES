@@ -16,7 +16,7 @@ export const api = {
   // Apps
   getApps: () => request<any[]>('/apps'),
   getApp: (id: string) => request<any>(`/apps/${id}`),
-  createApp: (data: { name: string; description?: string }) => request<any>('/apps', { method: 'POST', body: JSON.stringify(data) }),
+  createApp: (data: any) => request<any>('/apps', { method: 'POST', body: JSON.stringify(data) }),
   updateApp: (id: string, data: any) => request<any>(`/apps/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   publishApp: (id: string) => request<any>(`/apps/${id}/publish`, { method: 'POST' }),
   deleteApp: (id: string) => request<any>(`/apps/${id}`, { method: 'DELETE' }),
@@ -29,10 +29,11 @@ export const api = {
     if (params?.status) qs.set('status', params.status);
     return request<any[]>(`/completions?${qs}`);
   },
-  createCompletion: (data: { app_id: string; station_id?: string; operator_name?: string }) =>
-    request<any>('/completions', { method: 'POST', body: JSON.stringify(data) }),
-  updateCompletion: (id: string, data: any) =>
-    request<any>(`/completions/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  getCompletion: (id: string) => request<any>(`/completions/${id}`),
+  createCompletion: (data: any) => request<any>('/completions', { method: 'POST', body: JSON.stringify(data) }),
+  updateCompletion: (id: string, data: any) => request<any>(`/completions/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  getAppHistory: (appId: string, page = 1, limit = 25) =>
+    request<any>(`/completions/app/${appId}/history?page=${page}&limit=${limit}`),
 
   // Tables
   getTables: () => request<any[]>('/tables'),
@@ -51,6 +52,20 @@ export const api = {
   updateStation: (id: string, data: any) => request<any>(`/stations/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteStation: (id: string) => request<any>(`/stations/${id}`, { method: 'DELETE' }),
 
+  // Departments
+  getDepartments: () => request<any[]>('/departments'),
+  createDepartment: (data: any) => request<any>('/departments', { method: 'POST', body: JSON.stringify(data) }),
+  updateDepartment: (id: string, data: any) => request<any>(`/departments/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteDepartment: (id: string) => request<any>(`/departments/${id}`, { method: 'DELETE' }),
+
+  // Work Orders
+  getWorkOrders: () => request<any[]>('/work-orders'),
+  getWorkOrder: (id: string) => request<any>(`/work-orders/${id}`),
+  createWorkOrder: (data: any) => request<any>('/work-orders', { method: 'POST', body: JSON.stringify(data) }),
+  updateWorkOrder: (id: string, data: any) => request<any>(`/work-orders/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteWorkOrder: (id: string) => request<any>(`/work-orders/${id}`, { method: 'DELETE' }),
+  completeWorkOrder: (id: string) => request<any>(`/work-orders/${id}/complete`, { method: 'PUT' }),
+
   // Analytics
   getOverview: () => request<any>('/analytics/overview'),
   getThroughput: (days?: number) => request<any[]>(`/analytics/throughput?days=${days ?? 30}`),
@@ -58,4 +73,7 @@ export const api = {
   getOperatorPerformance: () => request<any[]>('/analytics/operator-performance'),
   getAppPerformance: () => request<any[]>('/analytics/app-performance'),
   getQualityData: (days?: number) => request<any[]>(`/analytics/quality?days=${days ?? 30}`),
+  getManagerView: () => request<any>('/analytics/manager-view'),
+  getPlantView: () => request<any>('/analytics/plant-view'),
+  getCompletionDetail: (id: string) => request<any>(`/analytics/completion/${id}`),
 };
