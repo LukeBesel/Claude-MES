@@ -464,6 +464,8 @@ router.get('/capacity', (req, res) => {
       ? Math.round((hoursRequired / (daysRemaining * 8)) * 10) / 10
       : Math.round((hoursRequired / 8) * 10) / 10;
 
+    const dailyHours = Math.round((hoursRequired / Math.max(1, daysRemaining ?? 1)) * 10) / 10;
+
     return {
       id: wo.id,
       work_order_number: wo.work_order_number,
@@ -475,6 +477,7 @@ router.get('/capacity', (req, res) => {
       takt_time_minutes: wo.takt_time_minutes,
       avg_cycle_minutes: avgCycleMinutes,
       hours_required: Math.round(hoursRequired * 10) / 10,
+      daily_hours: dailyHours,
       operators_needed_8h: operatorsNeeded,
       days_remaining: daysRemaining,
       scheduled_end: wo.scheduled_end,
@@ -485,32 +488,95 @@ router.get('/capacity', (req, res) => {
     };
   });
 
-  const deptMap = {};
-  for (const wo of enriched) {
-    const dept = wo.department_name;
-    if (!deptMap[dept]) deptMap[dept] = {
-      name: dept,
-      color: wo.department_color,
-      hours_required: 0,
-      operators_needed: 0,
-      work_order_count: 0,
-    };
-    deptMap[dept].hours_required += wo.hours_required;
-    deptMap[dept].operators_needed += wo.operators_needed_8h;
-    deptMap[dept].work_order_count += 1;
+  // Lay each work order's remaining hours out across the days until its due
+  // date (overdue work lands entirely on today), so demand can be compared
+  // against real headcount per day over the planning horizon.
+  const HORIZON_DAYS = 14;
+  const days = [];
+  for (let i = 0; i < HORIZON_DAYS; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() + i);
+    days.push(d.toISOString().slice(0, 10));
   }
 
-  const departments = Object.values(deptMap).map(d => ({
-    ...d,
-    hours_required: Math.round(d.hours_required * 10) / 10,
-    operators_needed: Math.round(d.operators_needed * 10) / 10,
-  }));
+  const allDepts = db.prepare('SELECT * FROM departments ORDER BY name').all();
+  const deptMap = {};
+  const ensureDept = (name, color, headcount) => {
+    if (!deptMap[name]) deptMap[name] = {
+      name, color,
+      headcount: headcount || 0,
+      hours_required: 0,
+      work_order_count: 0,
+      demand_by_day: Object.fromEntries(days.map(d => [d, 0])),
+    };
+    return deptMap[name];
+  };
+  for (const d of allDepts) ensureDept(d.name, d.color, d.headcount);
+
+  for (const wo of enriched) {
+    if (wo.hours_required <= 0) continue;
+    const dept = ensureDept(wo.department_name, wo.department_color, 0);
+    dept.hours_required += wo.hours_required;
+    dept.work_order_count += 1;
+
+    const spreadDays = Math.min(HORIZON_DAYS, Math.max(1, wo.days_remaining ?? 1));
+    const perDay = wo.hours_required / spreadDays;
+    for (let i = 0; i < spreadDays; i++) dept.demand_by_day[days[i]] += perDay;
+  }
+
+  const departments = Object.values(deptMap)
+    .filter(d => d.work_order_count > 0 || d.headcount > 0)
+    .map(d => {
+      const availablePerDay = d.headcount * 8;
+      const demandDays = days.map(day => ({ date: day, hours: Math.round(d.demand_by_day[day] * 10) / 10 }));
+      const peakHours = Math.max(0, ...demandDays.map(x => x.hours));
+      const peakUtilization = availablePerDay > 0 ? Math.round((peakHours / availablePerDay) * 100) : (peakHours > 0 ? null : 0);
+      const operatorsGap = Math.ceil(peakHours / 8) - d.headcount;
+      const status =
+        (availablePerDay === 0 && peakHours > 0) || (peakUtilization !== null && peakUtilization > 100) ? 'over' :
+        peakUtilization !== null && peakUtilization >= 85 ? 'tight' : 'ok';
+      return {
+        name: d.name,
+        color: d.color,
+        headcount: d.headcount,
+        hours_required: Math.round(d.hours_required * 10) / 10,
+        work_order_count: d.work_order_count,
+        available_hours_per_day: availablePerDay,
+        demand_by_day: demandDays,
+        peak_day_hours: Math.round(peakHours * 10) / 10,
+        peak_utilization_pct: peakUtilization,
+        operators_gap: operatorsGap,
+        status,
+      };
+    });
+
+  // Plant-wide demand timeline, one stacked segment per department
+  const timeline = days.map(day => {
+    const row = { date: day };
+    for (const d of departments) {
+      const hours = d.demand_by_day.find(x => x.date === day)?.hours ?? 0;
+      if (hours > 0 || d.work_order_count > 0) row[d.name] = hours;
+    }
+    return row;
+  });
+
+  const totalHeadcount = departments.reduce((s, d) => s + d.headcount, 0);
+  const totalAvailablePerDay = totalHeadcount * 8;
+  const plantPeak = Math.max(0, ...timeline.map(row =>
+    Object.entries(row).reduce((s, [k, v]) => k === 'date' ? s : s + v, 0)
+  ));
 
   res.json({
     work_orders: enriched,
     summary: {
       total_hours_required: Math.round(enriched.reduce((s, wo) => s + wo.hours_required, 0) * 10) / 10,
       total_operators_needed_8h: Math.round(enriched.reduce((s, wo) => s + wo.operators_needed_8h, 0) * 10) / 10,
+      total_headcount: totalHeadcount,
+      total_available_hours_per_day: totalAvailablePerDay,
+      plant_peak_day_hours: Math.round(plantPeak * 10) / 10,
+      plant_peak_utilization_pct: totalAvailablePerDay > 0 ? Math.round((plantPeak / totalAvailablePerDay) * 100) : null,
+      horizon_days: HORIZON_DAYS,
+      timeline,
       departments,
     },
   });
@@ -572,6 +638,190 @@ router.get('/completion/:id', (req, res) => {
     cycle_time_minutes: cycleTimeMinutes,
     app_name:         app?.name || completion.app_name,
     work_order:       workOrder,
+  });
+});
+
+// ─── GET /daily-brief — cross-module morning briefing for the dashboard ──────
+
+router.get('/daily-brief', (req, res) => {
+  const planRow = db.prepare('SELECT tier FROM plan WHERE id = 1').get();
+  const isPro = planRow && planRow.tier !== 'free';
+
+  // ── Needs attention: everything that should change someone's plan today
+  const attention = [];
+
+  const activeWOs = db.prepare(`
+    SELECT wo.*, d.name AS department_name
+    FROM work_orders wo
+    LEFT JOIN departments d ON d.id = wo.department_id
+    WHERE wo.status NOT IN ('completed', 'cancelled')
+  `).all();
+  for (const wo of activeWOs) {
+    const ss = calcScheduleStatus(wo);
+    if (ss === 'overdue' || ss === 'behind') {
+      attention.push({
+        type: ss === 'overdue' ? 'wo_overdue' : 'wo_behind',
+        severity: ss === 'overdue' ? 'red' : 'amber',
+        label: `${wo.work_order_number} · ${wo.part_name}`,
+        detail: `${wo.quantity_completed}/${wo.quantity} done${wo.department_name ? ` · ${wo.department_name}` : ''} · due ${new Date(wo.scheduled_end).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`,
+        link: '/schedule',
+      });
+    }
+  }
+
+  const downStations = db.prepare(`SELECT id, name, current_status, current_status_since FROM stations WHERE current_status = 'down'`).all();
+  for (const st of downStations) {
+    const mins = st.current_status_since ? Math.floor((Date.now() - new Date(st.current_status_since).getTime()) / 60000) : null;
+    attention.push({
+      type: 'station_down',
+      severity: 'red',
+      label: `${st.name} is down`,
+      detail: mins !== null ? `for ${mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`}` : '',
+      link: `/stations/${st.id}`,
+    });
+  }
+
+  if (isPro) {
+    const criticalNCRs = db.prepare(`
+      SELECT id, ncr_number, title, due_date FROM ncrs
+      WHERE severity = 'critical' AND status NOT IN ('resolved', 'closed')
+      ORDER BY created_at DESC LIMIT 10
+    `).all();
+    for (const n of criticalNCRs) {
+      attention.push({
+        type: 'ncr_critical',
+        severity: 'red',
+        label: `${n.ncr_number} · ${n.title}`,
+        detail: n.due_date ? `critical NCR · due ${new Date(n.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : 'critical NCR',
+        link: `/quality/${n.id}`,
+      });
+    }
+
+    const lowStock = db.prepare(`
+      SELECT i.id, i.sku, i.name, i.reorder_point, COALESCE(SUM(sl.quantity), 0) as on_hand
+      FROM items i
+      LEFT JOIN stock_levels sl ON sl.item_id = i.id
+      WHERE i.is_active = 1 AND i.reorder_point > 0
+      GROUP BY i.id
+      HAVING on_hand <= i.reorder_point
+      ORDER BY (on_hand / i.reorder_point) ASC
+      LIMIT 10
+    `).all();
+    for (const item of lowStock) {
+      attention.push({
+        type: 'stock_low',
+        severity: item.on_hand <= 0 ? 'red' : 'amber',
+        label: `${item.sku} · ${item.name}`,
+        detail: `${item.on_hand} on hand (reorder at ${item.reorder_point})`,
+        link: `/inventory/${item.id}`,
+      });
+    }
+
+    const latePOs = db.prepare(`
+      SELECT po.id, po.po_number, po.expected_date, v.name AS vendor_name
+      FROM purchase_orders po
+      LEFT JOIN vendors v ON v.id = po.vendor_id
+      WHERE po.status IN ('sent', 'partial') AND po.expected_date < date('now')
+      ORDER BY po.expected_date ASC LIMIT 10
+    `).all();
+    for (const po of latePOs) {
+      attention.push({
+        type: 'po_late',
+        severity: 'amber',
+        label: `${po.po_number}${po.vendor_name ? ` · ${po.vendor_name}` : ''}`,
+        detail: `expected ${new Date(po.expected_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}, not received`,
+        link: '/purchasing',
+      });
+    }
+  }
+
+  attention.sort((a, b) => (a.severity === 'red' ? 0 : 1) - (b.severity === 'red' ? 0 : 1));
+
+  // ── KPIs with deltas
+  const completedToday = db.prepare("SELECT COUNT(*) as c FROM completions WHERE status='completed' AND date(completed_at)=date('now')").get().c;
+  const weekAvgRow = db.prepare(`
+    SELECT COUNT(*) / 7.0 as avg
+    FROM completions
+    WHERE status='completed' AND date(completed_at) >= date('now', '-7 days') AND date(completed_at) < date('now')
+  `).get();
+  const weekAvg = weekAvgRow?.avg || 0;
+  const vsAvgPct = weekAvg > 0 ? Math.round(((completedToday - weekAvg) / weekAvg) * 100) : null;
+
+  const activeNow = db.prepare("SELECT COUNT(*) as c FROM completions WHERE status='in_progress'").get().c;
+
+  const pfRows = db.prepare(`
+    SELECT data FROM completions
+    WHERE status='completed' AND completed_at >= datetime('now', '-7 days')
+  `).all();
+  let pass = 0, fail = 0;
+  for (const row of pfRows) {
+    const vals = Object.values(JSON.parse(row.data));
+    if (vals.some(v => v === 'Fail')) fail++;
+    else if (vals.some(v => v === 'Pass')) pass++;
+  }
+  const passRate7d = (pass + fail) > 0 ? Math.round((pass / (pass + fail)) * 100) : null;
+
+  const woSummary = { on_track: 0, completed: 0, total: 0 };
+  for (const wo of activeWOs) {
+    const ss = calcScheduleStatus(wo);
+    woSummary.total++;
+    if (ss === 'on_track' || ss === 'completed') woSummary.on_track++;
+  }
+  const scheduleAdherence = woSummary.total > 0 ? Math.round((woSummary.on_track / woSummary.total) * 100) : null;
+
+  // ── Due in the next 48 hours
+  const dueSoon = activeWOs
+    .filter(wo => {
+      if (!wo.scheduled_end) return false;
+      const hours = (new Date(wo.scheduled_end) - Date.now()) / 3600000;
+      return hours <= 48; // includes already-late WOs
+    })
+    .map(wo => ({
+      id: wo.id,
+      work_order_number: wo.work_order_number,
+      part_name: wo.part_name,
+      department_name: wo.department_name,
+      quantity: wo.quantity,
+      quantity_completed: wo.quantity_completed,
+      completion_pct: wo.quantity > 0 ? Math.round((wo.quantity_completed / wo.quantity) * 100) : 0,
+      scheduled_end: wo.scheduled_end,
+      priority: wo.priority,
+      schedule_status: calcScheduleStatus(wo),
+    }))
+    .sort((a, b) => new Date(a.scheduled_end) - new Date(b.scheduled_end))
+    .slice(0, 8);
+
+  // ── 7-day throughput with the week's average for a reference line
+  const throughput = db.prepare(`
+    SELECT date(completed_at) as date, COUNT(*) as count
+    FROM completions
+    WHERE status='completed' AND date(completed_at) >= date('now', '-6 days')
+    GROUP BY date(completed_at)
+    ORDER BY date ASC
+  `).all();
+  const days7 = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    days7.push({ date: key, count: throughput.find(t => t.date === key)?.count ?? 0 });
+  }
+
+  res.json({
+    attention,
+    kpis: {
+      completed_today: completedToday,
+      vs_7day_avg_pct: vsAvgPct,
+      active_now: activeNow,
+      pass_rate_7d: passRate7d,
+      schedule_adherence: scheduleAdherence,
+      work_orders_on_track: woSummary.on_track,
+      work_orders_total: woSummary.total,
+    },
+    due_soon: dueSoon,
+    throughput_7d: days7,
+    week_avg_per_day: Math.round(weekAvg * 10) / 10,
+    is_pro: !!isPro,
   });
 });
 

@@ -44,13 +44,14 @@ router.post('/', (req, res) => {
     description   = '',
     manager_name  = '',
     color         = '#3b82f6',
+    headcount     = 0,
   } = req.body;
 
   if (!name) return res.status(400).json({ error: 'name is required' });
 
   const id = uuidv4();
-  db.prepare(`INSERT INTO departments (id, name, description, manager_name, color) VALUES (?, ?, ?, ?, ?)`)
-    .run(id, name, description, manager_name, color);
+  db.prepare(`INSERT INTO departments (id, name, description, manager_name, color, headcount) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(id, name, description, manager_name, color, Math.max(0, parseInt(headcount) || 0));
 
   const dept = db.prepare('SELECT * FROM departments WHERE id = ?').get(id);
   res.status(201).json({ ...dept, work_order_count: 0, completion_count: 0, active_work_orders: 0 });
@@ -67,10 +68,11 @@ router.put('/:id', (req, res) => {
     description:  req.body.description  !== undefined ? req.body.description  : dept.description,
     manager_name: req.body.manager_name !== undefined ? req.body.manager_name : dept.manager_name,
     color:        req.body.color        !== undefined ? req.body.color        : dept.color,
+    headcount:    req.body.headcount    !== undefined ? Math.max(0, parseInt(req.body.headcount) || 0) : (dept.headcount || 0),
   };
 
-  db.prepare(`UPDATE departments SET name=?, description=?, manager_name=?, color=? WHERE id=?`)
-    .run(updates.name, updates.description, updates.manager_name, updates.color, req.params.id);
+  db.prepare(`UPDATE departments SET name=?, description=?, manager_name=?, color=?, headcount=? WHERE id=?`)
+    .run(updates.name, updates.description, updates.manager_name, updates.color, updates.headcount, req.params.id);
 
   const updated = db.prepare('SELECT * FROM departments WHERE id = ?').get(req.params.id);
 

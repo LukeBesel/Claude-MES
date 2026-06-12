@@ -89,6 +89,7 @@ export const api = {
 
   // ── Analytics
   getOverview: () => request<any>('/analytics/overview'),
+  getDailyBrief: () => request<any>('/analytics/daily-brief'),
   getThroughput: (days?: number) => request<any[]>(`/analytics/throughput?days=${days ?? 30}`),
   getCycleTimes: (days?: number) => request<any[]>(`/analytics/cycle-times?days=${days ?? 30}`),
   getOperatorPerformance: () => request<any[]>('/analytics/operator-performance'),
