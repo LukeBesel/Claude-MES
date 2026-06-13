@@ -21,6 +21,44 @@ export const THEME_PRESETS: Theme[] = [
 
 const LS_KEY = 'hm_theme';
 
+// ─── Color helpers for custom accent generation ───────────────────────────────
+
+function hexToRgb(hex: string): [number, number, number] {
+  let h = hex.replace('#', '').trim();
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  const num = parseInt(h, 16);
+  return [(num >> 16) & 255, (num >> 8) & 255, num & 255];
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
+  return '#' + [r, g, b].map(v => clamp(v).toString(16).padStart(2, '0')).join('');
+}
+
+// Blend a hex color toward a target RGB by `amount` (0-1).
+function mix(hex: string, target: [number, number, number], amount: number): string {
+  const [r, g, b] = hexToRgb(hex);
+  return rgbToHex(
+    r + (target[0] - r) * amount,
+    g + (target[1] - g) * amount,
+    b + (target[2] - b) * amount,
+  );
+}
+
+const BLACK: [number, number, number] = [0, 0, 0];
+const WHITE: [number, number, number] = [255, 255, 255];
+
+// Build a full Theme from a single accent color, deriving the rest of the palette.
+export function buildCustomTheme(accent: string): Theme {
+  return {
+    name: 'custom',
+    accent,
+    accentDark: mix(accent, BLACK, 0.2),
+    accentLight: mix(accent, WHITE, 0.92),
+    sidebarBg: mix(accent, BLACK, 0.9),
+  };
+}
+
 function applyTheme(theme: Theme) {
   const root = document.documentElement;
   root.style.setProperty('--accent', theme.accent);
@@ -29,12 +67,24 @@ function applyTheme(theme: Theme) {
   root.style.setProperty('--sidebar-bg', theme.sidebarBg);
 }
 
+function isValidTheme(t: any): t is Theme {
+  return t && typeof t.accent === 'string' && typeof t.accentDark === 'string'
+    && typeof t.accentLight === 'string' && typeof t.sidebarBg === 'string';
+}
+
 function loadTheme(): Theme {
   try {
     const saved = localStorage.getItem(LS_KEY);
     if (saved) {
-      const found = THEME_PRESETS.find(t => t.name === saved);
-      if (found) return found;
+      // New format: full theme object stored as JSON (presets + custom colors)
+      try {
+        const parsed = JSON.parse(saved);
+        if (isValidTheme(parsed)) return parsed;
+      } catch {
+        // Old format: just the preset name as a plain string
+        const found = THEME_PRESETS.find(t => t.name === saved);
+        if (found) return found;
+      }
     }
   } catch {
     // ignore
@@ -60,7 +110,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     setThemeState(newTheme);
     applyTheme(newTheme);
     try {
-      localStorage.setItem(LS_KEY, newTheme.name);
+      localStorage.setItem(LS_KEY, JSON.stringify(newTheme));
     } catch {
       // ignore
     }

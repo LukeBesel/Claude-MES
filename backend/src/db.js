@@ -168,7 +168,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS plan (
     id INTEGER PRIMARY KEY DEFAULT 1,
     tier TEXT NOT NULL DEFAULT 'free',
-    app_limit INTEGER NOT NULL DEFAULT 3,
+    app_limit INTEGER NOT NULL DEFAULT 5,
     dashboard_limit INTEGER NOT NULL DEFAULT 2,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
@@ -552,7 +552,7 @@ function daysAgo(n) {
 function seedPlan() {
   const existing = db.prepare('SELECT id FROM plan LIMIT 1').get();
   if (!existing) {
-    db.prepare(`INSERT INTO plan (tier, app_limit, dashboard_limit) VALUES ('free', 3, 2)`).run();
+    db.prepare(`INSERT INTO plan (tier, app_limit, dashboard_limit) VALUES ('free', 5, 2)`).run();
   }
 }
 
@@ -1135,6 +1135,18 @@ seedDashboard();
       ins.run(defaultOrg.id, r.key, r.value, r.updated_at);
     }
   }
+}
+
+// ─── Migration: bump free-tier app limit from 3 to 5 ──────────────────────────
+// One-time, guarded by a schema_meta flag. Only touches plans that are still
+// on the original free-tier default (tier='free' and app_limit=3); plans that
+// were already customized (e.g. via add-on purchases changing only extra_app_slots)
+// are unaffected since app_limit itself is untouched by add-on purchases.
+
+const freeLimitBumped = db.prepare("SELECT value FROM schema_meta WHERE key = 'free_tier_app_limit_v2'").get();
+if (!freeLimitBumped) {
+  db.prepare("UPDATE plan SET app_limit = 5, updated_at = datetime('now') WHERE tier = 'free' AND app_limit = 3").run();
+  db.prepare("INSERT INTO schema_meta (key, value) VALUES ('free_tier_app_limit_v2', '1')").run();
 }
 
 module.exports = db;

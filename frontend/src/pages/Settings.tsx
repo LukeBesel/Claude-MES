@@ -25,9 +25,10 @@ import {
   AppWindow,
   LayoutGrid,
 } from 'lucide-react';
-import { useTheme, THEME_PRESETS, Theme } from '../context/ThemeContext';
+import { useTheme, THEME_PRESETS, Theme, buildCustomTheme } from '../context/ThemeContext';
 import { usePlan } from '../context/PlanContext';
 import { useAuth } from '../context/AuthContext';
+import { useBranding } from '../context/BrandingContext';
 import { api } from '../api/client';
 import type { PlanTier, AddonPricing } from '../types';
 
@@ -100,7 +101,7 @@ const PRESET_LABELS: Record<string, string> = {
 };
 
 const FREE_FEATURES = [
-  'Up to 3 production apps',
+  'Up to 5 production apps',
   'Up to 2 dashboards',
   'Basic analytics',
   'CSV export',
@@ -203,6 +204,7 @@ function CompanyTab() {
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { refresh: refreshBranding } = useBranding();
 
   const isDirty = JSON.stringify(form) !== JSON.stringify(saved);
 
@@ -228,6 +230,7 @@ function CompanyTab() {
     try {
       await api.updateCompanySettings(form);
       setSaved({ ...form });
+      refreshBranding();
       showToast('Settings saved successfully');
     } catch {
       showToast('Failed to save settings', 'error');
@@ -280,6 +283,9 @@ function CompanyTab() {
               value={form.logo_url}
               onChange={set('logo_url')}
             />
+            <p className="text-xs text-gray-400 mt-1">
+              Shown in the top-left of the sidebar in place of the default mark. "Powered by HartMonitor" stays visible underneath.
+            </p>
             {form.logo_url && (
               <div className="mt-2 flex items-center gap-3">
                 <img
@@ -872,6 +878,30 @@ function ThemeTab() {
               </button>
             );
           })}
+        </div>
+
+        {/* Custom accent color */}
+        <div className="mt-4 flex items-center gap-3">
+          <label
+            className={`relative flex items-center gap-2 px-3 py-2 rounded-xl border-2 cursor-pointer transition-all hover:shadow-sm ${
+              theme.name === 'custom' ? 'shadow-md' : 'border-gray-100 hover:border-gray-200'
+            }`}
+            style={theme.name === 'custom' ? { borderColor: theme.accent, backgroundColor: theme.accentLight } : {}}
+          >
+            <div
+              className="w-8 h-8 rounded-lg border border-gray-200 flex-shrink-0"
+              style={{ backgroundColor: theme.name === 'custom' ? theme.accent : '#ffffff' }}
+            />
+            <span className="text-[11px] font-medium text-gray-600">
+              {theme.name === 'custom' ? `Custom — ${theme.accent}` : 'Pick a custom colour…'}
+            </span>
+            <input
+              type="color"
+              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+              value={theme.name === 'custom' ? theme.accent : '#3b82f6'}
+              onChange={(e) => setTheme(buildCustomTheme(e.target.value))}
+            />
+          </label>
         </div>
       </div>
 

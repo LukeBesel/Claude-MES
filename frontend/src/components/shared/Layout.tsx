@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { usePlan } from '../../context/PlanContext';
 import { useAuth } from '../../context/AuthContext';
+import { useBranding } from '../../context/BrandingContext';
 
 type NavItem = {
   to: string; icon: React.ElementType; label: string;
@@ -72,11 +73,17 @@ export default function Layout() {
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const { isFree } = usePlan();
   const { user, logout, isAtLeast } = useAuth();
+  const { companyName, logoUrl } = useBranding();
+  const [logoError, setLogoError] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
     localStorage.setItem('hm_sidebar', collapsed ? 'collapsed' : 'open');
   }, [collapsed]);
+
+  useEffect(() => {
+    setLogoError(false);
+  }, [logoUrl]);
 
   const handleLogout = async () => {
     await logout();
@@ -95,16 +102,29 @@ export default function Layout() {
           to="/"
           className={`flex items-center border-b border-white/10 hover:bg-white/5 transition-colors flex-shrink-0 ${collapsed ? 'justify-center p-3' : 'gap-3 p-4'}`}
         >
-          <div
-            className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 shadow-lg"
-            style={{ background: 'linear-gradient(135deg, var(--accent), var(--accent-dark))' }}
-          >
-            <Activity size={18} className="text-white" />
-          </div>
+          {logoUrl && !logoError ? (
+            <img
+              src={logoUrl}
+              alt={companyName || 'Company logo'}
+              className="w-9 h-9 rounded-xl object-contain flex-shrink-0 bg-white/5"
+              onError={() => setLogoError(true)}
+            />
+          ) : (
+            <div
+              className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 shadow-lg"
+              style={{ background: 'linear-gradient(135deg, var(--accent), var(--accent-dark))' }}
+            >
+              <Activity size={18} className="text-white" />
+            </div>
+          )}
           {!collapsed && (
-            <div>
-              <div className="text-white font-bold text-base leading-tight tracking-tight">HartMonitor</div>
-              <div className="text-blue-300/70 text-[11px] font-medium">Manufacturing Intelligence</div>
+            <div className="min-w-0">
+              <div className="text-white font-bold text-base leading-tight tracking-tight truncate">
+                {companyName || 'HartMonitor'}
+              </div>
+              <div className="text-blue-300/70 text-[11px] font-medium truncate">
+                {companyName ? 'Powered by HartMonitor' : 'Manufacturing Intelligence'}
+              </div>
             </div>
           )}
         </Link>

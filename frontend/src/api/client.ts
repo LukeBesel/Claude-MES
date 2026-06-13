@@ -211,7 +211,8 @@ export const api = {
     if (!res.ok) throw new Error(`Export failed (${res.status})`);
     const disposition = res.headers.get('Content-Disposition') || '';
     const match = disposition.match(/filename="?([^";]+)"?/);
-    const filename = match?.[1] || `${type}-export.${type === 'all' ? 'json' : 'csv'}`;
+    const fallbackName = type.replace(/\//g, '-');
+    const filename = match?.[1] || `${fallbackName}-export.${type === 'all' ? 'json' : 'csv'}`;
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -222,6 +223,10 @@ export const api = {
     a.remove();
     URL.revokeObjectURL(url);
   },
+
+  // ── Per-app export
+  downloadAppCompletions: (appId: string) => api.downloadExport(`apps/${appId}/completions`),
+  downloadAppBundle: (appId: string) => api.downloadExport(`apps/${appId}/bundle`),
 
   // ── Auth
   login: (email: string, password: string) =>

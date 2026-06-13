@@ -14,9 +14,9 @@ const PRICING = {
     free: {
       name: 'Free',
       monthly_price: 0,
-      app_limit: 3,
+      app_limit: 5,
       dashboard_limit: 2,
-      features: ['App Builder (3 apps)', '2 Dashboards', 'Work Orders & Scheduling', 'OEE Tracking', 'Basic Analytics', 'Operator Portal', 'CSV Export'],
+      features: ['App Builder (5 apps)', '2 Dashboards', 'Work Orders & Scheduling', 'OEE Tracking', 'Basic Analytics', 'Operator Portal', 'CSV Export'],
     },
     pro: {
       name: 'Pro',
@@ -42,7 +42,7 @@ const PRICING = {
 function getPlanRow(companyId) {
   let plan = db.prepare('SELECT * FROM plan WHERE company_id = ?').get(companyId);
   if (!plan) {
-    db.prepare(`INSERT INTO plan (tier, app_limit, dashboard_limit, company_id) VALUES ('free', 3, 2, ?)`).run(companyId);
+    db.prepare(`INSERT INTO plan (tier, app_limit, dashboard_limit, company_id) VALUES ('free', 5, 2, ?)`).run(companyId);
     plan = db.prepare('SELECT * FROM plan WHERE company_id = ?').get(companyId);
   }
   return plan;

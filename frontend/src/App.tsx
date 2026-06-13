@@ -29,6 +29,7 @@ import Login from './pages/Login';
 import { ThemeProvider } from './context/ThemeContext';
 import { PlanProvider } from './context/PlanContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { BrandingProvider } from './context/BrandingContext';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -45,6 +46,7 @@ export default function App() {
   return (
     <AuthProvider>
       <ThemeProvider>
+        <BrandingProvider>
         <PlanProvider>
           <BrowserRouter>
             <Routes>
@@ -84,6 +86,7 @@ export default function App() {
             </Routes>
           </BrowserRouter>
         </PlanProvider>
+        </BrandingProvider>
       </ThemeProvider>
     </AuthProvider>
   );
