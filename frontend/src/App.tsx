@@ -26,10 +26,13 @@ import Inventory from './pages/Inventory';
 import Purchasing from './pages/Purchasing';
 import Quality from './pages/Quality';
 import Login from './pages/Login';
+import Leaderboard from './pages/Leaderboard';
+import LeaderboardTV from './pages/LeaderboardTV';
 import { ThemeProvider } from './context/ThemeContext';
 import { PlanProvider } from './context/PlanContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { BrandingProvider } from './context/BrandingContext';
+import { NavPrefsProvider } from './context/NavPrefsContext';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -48,11 +51,13 @@ export default function App() {
       <ThemeProvider>
         <BrandingProvider>
         <PlanProvider>
+        <NavPrefsProvider>
           <BrowserRouter>
             <Routes>
               <Route path="/login" element={<Login />} />
               <Route path="/play/:id" element={<ProtectedRoute><AppPlayer /></ProtectedRoute>} />
               <Route path="/operator" element={<ProtectedRoute><OperatorPortal /></ProtectedRoute>} />
+              <Route path="/leaderboard/tv" element={<ProtectedRoute><LeaderboardTV /></ProtectedRoute>} />
               <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
                 <Route index element={<Dashboard />} />
                 <Route path="apps" element={<AppsLibrary />} />
@@ -80,11 +85,13 @@ export default function App() {
                 <Route path="purchasing/:tab" element={<Purchasing />} />
                 <Route path="quality" element={<Quality />} />
                 <Route path="quality/:id" element={<Quality />} />
+                <Route path="leaderboard" element={<Leaderboard />} />
                 <Route path="settings" element={<SettingsPage />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Route>
             </Routes>
           </BrowserRouter>
+        </NavPrefsProvider>
         </PlanProvider>
         </BrandingProvider>
       </ThemeProvider>

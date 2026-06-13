@@ -19,6 +19,7 @@ const configRouter       = require('./routes/config');
 const exportRouter       = require('./routes/export');
 const authRouter         = require('./routes/auth');
 const usersRouter        = require('./routes/users');
+const leaderboardRouter  = require('./routes/leaderboard');
 const { requireAuth }    = require('./middleware/auth');
 
 const app  = express();
@@ -45,6 +46,7 @@ app.use('/api/quality',       qualityRouter);
 app.use('/api/config',        configRouter);
 app.use('/api/export',        exportRouter);
 app.use('/api/users',         usersRouter);
+app.use('/api/leaderboard',   leaderboardRouter);
 
 const frontendDist = path.join(__dirname, '..', '..', 'frontend', 'dist');
 app.use(express.static(frontendDist));

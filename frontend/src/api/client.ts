@@ -1,3 +1,5 @@
+import type { DailyBrief, LeaderboardResponse, LeaderboardPeriod } from '../types';
+
 const BASE = '/api';
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -89,7 +91,7 @@ export const api = {
 
   // ── Analytics
   getOverview: () => request<any>('/analytics/overview'),
-  getDailyBrief: () => request<any>('/analytics/daily-brief'),
+  getDailyBrief: () => request<DailyBrief>('/analytics/daily-brief'),
   getThroughput: (days?: number) => request<any[]>(`/analytics/throughput?days=${days ?? 30}`),
   getCycleTimes: (days?: number) => request<any[]>(`/analytics/cycle-times?days=${days ?? 30}`),
   getOperatorPerformance: () => request<any[]>('/analytics/operator-performance'),
@@ -253,6 +255,10 @@ export const api = {
   getMe: () => request<any>('/auth/me'),
   changePassword: (current_password: string, new_password: string) =>
     request<any>('/auth/change-password', { method: 'PUT', body: JSON.stringify({ current_password, new_password }) }),
+
+  // ── Leaderboard
+  getLeaderboard: (period: LeaderboardPeriod = 'week') =>
+    request<LeaderboardResponse>(`/leaderboard?period=${period}`),
 
   // ── Users
   getUsers: () => request<any[]>('/users'),

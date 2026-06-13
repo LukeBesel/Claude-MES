@@ -24,17 +24,21 @@ import {
   Key,
   AppWindow,
   LayoutGrid,
+  PanelLeft,
+  RotateCcw,
 } from 'lucide-react';
 import { useTheme, THEME_PRESETS, Theme, buildCustomTheme } from '../context/ThemeContext';
 import { usePlan } from '../context/PlanContext';
 import { useAuth } from '../context/AuthContext';
 import { useBranding } from '../context/BrandingContext';
+import { useNavPrefs } from '../context/NavPrefsContext';
+import { NAV } from '../config/navigation';
 import { api } from '../api/client';
 import type { PlanTier, AddonPricing } from '../types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type TabId = 'company' | 'plan' | 'theme' | 'export' | 'users' | 'account';
+type TabId = 'company' | 'plan' | 'theme' | 'sidebar' | 'export' | 'users' | 'account';
 
 interface CompanyForm {
   company_name: string;
@@ -986,6 +990,57 @@ function ThemeTab() {
   );
 }
 
+// ─── Tab: Sidebar Navigation ──────────────────────────────────────────────────
+
+function SidebarTab() {
+  const { isItemHidden, toggleItem, resetNavPrefs } = useNavPrefs();
+
+  return (
+    <div className="space-y-8 max-w-2xl">
+      <div>
+        <SectionHeader title="Sidebar Navigation" subtitle="Choose which sections appear in the left sidebar for your account" />
+        <div className="space-y-6">
+          {NAV.map(({ group, items }) => {
+            const toggleable = items.filter(item => !item.pinned);
+            if (toggleable.length === 0) return null;
+            return (
+              <div key={group}>
+                <div className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 mb-1.5">{group}</div>
+                <div className="divide-y divide-gray-50">
+                  {toggleable.map(item => {
+                    const Icon = item.icon;
+                    return (
+                      <div key={item.to} className="flex items-center justify-between py-2.5 gap-4">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                            style={{ backgroundColor: 'var(--accent-light)', color: 'var(--accent)' }}>
+                            <Icon size={14} />
+                          </div>
+                          <span className="text-sm font-medium text-gray-800 truncate">{item.label}</span>
+                        </div>
+                        <Toggle checked={!isItemHidden(item.to)} onChange={() => toggleItem(item.to)} />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-4 pt-2 border-t border-gray-100">
+        <p className="text-xs text-gray-500">
+          Hidden sections can be re-enabled anytime. Command Center always stays visible.
+        </p>
+        <button onClick={resetNavPrefs} className="btn-secondary text-sm whitespace-nowrap flex items-center gap-1.5">
+          <RotateCcw size={13} /> Reset to Defaults
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Tab 4: Data Export ───────────────────────────────────────────────────────
 
 interface ExportCard {
@@ -1547,6 +1602,7 @@ export default function SettingsPage() {
     { id: 'company',  label: 'Company',        icon: <Building2 size={15} />,  minRole: 'manager' },
     { id: 'plan',     label: 'Plan & Billing', icon: <CreditCard size={15} />, minRole: 'manager' },
     { id: 'theme',    label: 'Visual Theme',   icon: <Palette size={15} /> },
+    { id: 'sidebar',  label: 'Sidebar',        icon: <PanelLeft size={15} /> },
     { id: 'export',   label: 'Data Export',    icon: <Download size={15} /> },
     { id: 'users',    label: 'Users & Access', icon: <Users size={15} />,      minRole: 'manager' },
   ];
@@ -1596,6 +1652,7 @@ export default function SettingsPage() {
         {activeTab === 'company'  && <CompanyTab />}
         {activeTab === 'plan'     && <PlanTab />}
         {activeTab === 'theme'    && <ThemeTab />}
+        {activeTab === 'sidebar'  && <SidebarTab />}
         {activeTab === 'export'   && <ExportTab />}
         {activeTab === 'users'    && <UsersTab />}
       </div>

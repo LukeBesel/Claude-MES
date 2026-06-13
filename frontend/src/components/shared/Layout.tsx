@@ -1,62 +1,15 @@
 import { useState, useEffect } from 'react';
 import { Outlet, NavLink, Link, useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard, AppWindow, Database, BarChart3, Monitor,
-  Calendar, Settings, Activity, Building2, ClipboardList,
-  Timer, Users, Cpu, LayoutGrid, ChevronLeft, ChevronRight,
-  Package, ShoppingCart, ShieldCheck, LogOut, ChevronDown,
+  Settings, Activity, ChevronLeft, ChevronRight,
+  LogOut, ChevronDown,
 } from 'lucide-react';
 import { usePlan } from '../../context/PlanContext';
 import { useAuth } from '../../context/AuthContext';
 import { useBranding } from '../../context/BrandingContext';
-
-type NavItem = {
-  to: string; icon: React.ElementType; label: string;
-  exact?: boolean; proOnly?: boolean; minRole?: string;
-};
-
-const NAV: { group: string; items: NavItem[] }[] = [
-  {
-    group: 'Operations',
-    items: [
-      { to: '/',         icon: LayoutDashboard, label: 'Command Center',  exact: true },
-      { to: '/apps',     icon: AppWindow,       label: 'App Library' },
-      { to: '/schedule', icon: Calendar,        label: 'Schedule' },
-    ]
-  },
-  {
-    group: 'Monitoring',
-    items: [
-      { to: '/plant',    icon: Building2,       label: 'Plant View' },
-      { to: '/manager',  icon: ClipboardList,   label: 'Manager View',  minRole: 'manager' },
-      { to: '/oee',      icon: Cpu,             label: 'OEE Tracker',   minRole: 'supervisor' },
-      { to: '/stations', icon: Monitor,         label: 'Stations' },
-    ]
-  },
-  {
-    group: 'Inventory & Supply',
-    items: [
-      { to: '/inventory',  icon: Package,      label: 'Inventory',   proOnly: true },
-      { to: '/purchasing', icon: ShoppingCart, label: 'Purchasing',  proOnly: true, minRole: 'supervisor' },
-    ]
-  },
-  {
-    group: 'Quality',
-    items: [
-      { to: '/quality', icon: ShieldCheck, label: 'NCR / Quality', proOnly: true },
-    ]
-  },
-  {
-    group: 'Analytics',
-    items: [
-      { to: '/dashboards',   icon: LayoutGrid, label: 'Dashboards' },
-      { to: '/step-metrics', icon: Timer,      label: 'Step Metrics',  minRole: 'supervisor' },
-      { to: '/capacity',     icon: Users,      label: 'Capacity Plan', minRole: 'manager' },
-      { to: '/analytics',    icon: BarChart3,  label: 'Analytics' },
-      { to: '/tables',       icon: Database,   label: 'Tables',        minRole: 'supervisor' },
-    ]
-  },
-];
+import { useNavPrefs } from '../../context/NavPrefsContext';
+import { NAV } from '../../config/navigation';
+import NotificationBell from './NotificationBell';
 
 function ProBadge() {
   return (
@@ -66,14 +19,13 @@ function ProBadge() {
   );
 }
 
-const ROLE_LEVELS: Record<string, number> = { developer: 5, manager: 4, supervisor: 3, operator: 2, viewer: 1 };
-
 export default function Layout() {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('hm_sidebar') === 'collapsed');
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const { isFree } = usePlan();
   const { user, logout, isAtLeast } = useAuth();
   const { companyName, logoUrl } = useBranding();
+  const { isItemHidden, isGroupCollapsed, toggleGroup } = useNavPrefs();
   const [logoError, setLogoError] = useState(false);
   const navigate = useNavigate();
 
@@ -133,15 +85,23 @@ export default function Layout() {
           {NAV.map(({ group, items }) => {
             const visibleItems = items.filter(item => {
               if (item.minRole && !isAtLeast(item.minRole as any)) return false;
+              if (!item.pinned && isItemHidden(item.to)) return false;
               return true;
             });
             if (visibleItems.length === 0) return null;
+            const groupCollapsed = !collapsed && isGroupCollapsed(group);
             return (
               <div key={group}>
                 {!collapsed && (
-                  <div className="text-[10px] font-semibold uppercase tracking-widest text-gray-500 px-3 mb-1.5">{group}</div>
+                  <button
+                    onClick={() => toggleGroup(group)}
+                    className="flex items-center justify-between w-full px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-gray-500 hover:text-gray-300 transition-colors"
+                  >
+                    {group}
+                    {groupCollapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
+                  </button>
                 )}
-                <div className="space-y-0.5">
+                <div className={`space-y-0.5 ${groupCollapsed ? 'hidden' : ''}`}>
                   {visibleItems.map((item) => {
                     const { to, icon: Icon, label, exact, proOnly } = item;
                     const isLocked = proOnly && isFree;
@@ -181,6 +141,8 @@ export default function Layout() {
         </nav>
 
         <div className="p-2 border-t border-white/10 flex-shrink-0 space-y-0.5">
+          <NotificationBell collapsed={collapsed} />
+
           <NavLink
             to="/settings"
             title={collapsed ? 'Settings' : undefined}

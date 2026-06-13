@@ -4,46 +4,16 @@ import { api } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import {
   TrendingUp, TrendingDown, Activity, CheckCircle, Cpu,
-  ShieldCheck, ShoppingCart, RefreshCw, CalendarCheck,
+  RefreshCw, CalendarCheck,
   ExternalLink, Plus, BarChart2, Monitor, Layers,
-  AlertTriangle, Package, CheckCircle2, ChevronRight, Wrench, Lock
+  AlertTriangle, CheckCircle2, ChevronRight, Lock
 } from 'lucide-react';
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
   CartesianGrid, ReferenceLine
 } from 'recharts';
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface AttentionItem {
-  type: 'wo_overdue' | 'wo_behind' | 'station_down' | 'ncr_critical' | 'stock_low' | 'po_late';
-  severity: 'red' | 'amber';
-  label: string;
-  detail: string;
-  link: string;
-}
-
-interface DailyBrief {
-  attention: AttentionItem[];
-  kpis: {
-    completed_today: number;
-    vs_7day_avg_pct: number | null;
-    active_now: number;
-    pass_rate_7d: number | null;
-    schedule_adherence: number | null;
-    work_orders_on_track: number;
-    work_orders_total: number;
-  };
-  due_soon: Array<{
-    id: string; work_order_number: string; part_name: string;
-    department_name: string | null; quantity: number; quantity_completed: number;
-    completion_pct: number; scheduled_end: string; priority: string;
-    schedule_status: string;
-  }>;
-  throughput_7d: Array<{ date: string; count: number }>;
-  week_avg_per_day: number;
-  is_pro: boolean;
-}
+import type { DailyBrief } from '../types';
+import { ATTENTION_ICONS, ATTENTION_TYPE_LABELS } from '../config/attention';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -59,24 +29,6 @@ function formatDate(): string {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
   });
 }
-
-const ATTENTION_ICONS: Record<AttentionItem['type'], React.ReactNode> = {
-  wo_overdue:   <CalendarCheck size={15} />,
-  wo_behind:    <CalendarCheck size={15} />,
-  station_down: <Wrench size={15} />,
-  ncr_critical: <ShieldCheck size={15} />,
-  stock_low:    <Package size={15} />,
-  po_late:      <ShoppingCart size={15} />,
-};
-
-const ATTENTION_TYPE_LABELS: Record<AttentionItem['type'], string> = {
-  wo_overdue:   'Work order overdue',
-  wo_behind:    'Work order behind',
-  station_down: 'Station down',
-  ncr_critical: 'Critical NCR',
-  stock_low:    'Low stock',
-  po_late:      'Late delivery',
-};
 
 const SCHEDULE_PILL: Record<string, string> = {
   on_track:    'bg-green-100 text-green-700',
