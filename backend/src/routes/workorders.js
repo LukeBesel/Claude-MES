@@ -30,14 +30,14 @@ function enrichWorkOrder(wo) {
   };
 }
 
-// ─── Generate next work order number ─────────────────────────────────────────
+// ─── Generate next work order number (per-company sequence) ───────────────────
 
-function nextWorkOrderNumber() {
+function nextWorkOrderNumber(companyId) {
   const year   = new Date().getFullYear();
   const prefix = `WO-${year}-`;
   const latest = db.prepare(
-    `SELECT work_order_number FROM work_orders WHERE work_order_number LIKE ? ORDER BY work_order_number DESC LIMIT 1`
-  ).get(prefix + '%');
+    `SELECT work_order_number FROM work_orders WHERE company_id = ? AND work_order_number LIKE ? ORDER BY work_order_number DESC LIMIT 1`
+  ).get(companyId, prefix + '%');
   if (!latest) return `${prefix}001`;
   const seq = parseInt(latest.work_order_number.replace(prefix, ''), 10);
   return `${prefix}${String(seq + 1).padStart(3, '0')}`;
@@ -58,14 +58,14 @@ router.get('/', (req, res) => {
   const { status, department_id, priority } = req.query;
 
   let query = ENRICHED_SELECT;
-  const conditions = [];
-  const params     = [];
+  const conditions = ['wo.company_id = ?'];
+  const params     = [req.companyId];
 
   if (status)        { conditions.push('wo.status = ?');        params.push(status); }
   if (department_id) { conditions.push('wo.department_id = ?'); params.push(department_id); }
   if (priority)      { conditions.push('wo.priority = ?');      params.push(priority); }
 
-  if (conditions.length) query += ' WHERE ' + conditions.join(' AND ');
+  query += ' WHERE ' + conditions.join(' AND ');
   query += ' ORDER BY wo.created_at DESC';
 
   const rows = db.prepare(query).all(...params);
@@ -95,19 +95,19 @@ router.post('/', (req, res) => {
   if (!quantity || quantity < 1) return res.status(400).json({ error: 'quantity must be a positive integer' });
 
   const id       = uuidv4();
-  const woNumber = work_order_number || nextWorkOrderNumber();
+  const woNumber = work_order_number || nextWorkOrderNumber(req.companyId);
 
   db.prepare(`
     INSERT INTO work_orders
       (id, work_order_number, part_number, part_name, quantity, quantity_completed,
        app_id, department_id, scheduled_start, scheduled_end, takt_time_minutes,
-       status, priority, notes, updated_at)
-    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       status, priority, notes, company_id, updated_at)
+    VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `).run(
     id, woNumber, part_number, part_name, quantity,
     app_id || null, department_id || null,
     scheduled_start || null, scheduled_end || null,
-    takt_time_minutes, status, priority, notes
+    takt_time_minutes, status, priority, notes, req.companyId
   );
 
   const wo = db.prepare(ENRICHED_SELECT + ' WHERE wo.id = ?').get(id);
@@ -117,7 +117,7 @@ router.post('/', (req, res) => {
 // ─── GET /:id - single work order with completion history count ───────────────
 
 router.get('/:id', (req, res) => {
-  const wo = db.prepare(ENRICHED_SELECT + ' WHERE wo.id = ?').get(req.params.id);
+  const wo = db.prepare(ENRICHED_SELECT + ' WHERE wo.id = ? AND wo.company_id = ?').get(req.params.id, req.companyId);
   if (!wo) return res.status(404).json({ error: 'Work order not found' });
 
   const historyCount = db.prepare(
@@ -130,7 +130,7 @@ router.get('/:id', (req, res) => {
 // ─── PUT /:id - update work order ────────────────────────────────────────────
 
 router.put('/:id', (req, res) => {
-  const wo = db.prepare('SELECT * FROM work_orders WHERE id = ?').get(req.params.id);
+  const wo = db.prepare('SELECT * FROM work_orders WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!wo) return res.status(404).json({ error: 'Work order not found' });
 
   const fields = [
@@ -165,7 +165,7 @@ router.put('/:id', (req, res) => {
 // ─── PUT /:id/complete - mark work order as completed ────────────────────────
 
 router.put('/:id/complete', (req, res) => {
-  const wo = db.prepare('SELECT * FROM work_orders WHERE id = ?').get(req.params.id);
+  const wo = db.prepare('SELECT * FROM work_orders WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!wo) return res.status(404).json({ error: 'Work order not found' });
 
   db.prepare(`
@@ -181,7 +181,7 @@ router.put('/:id/complete', (req, res) => {
 // ─── POST /:id/increment - increment quantity_completed by 1 ─────────────────
 
 router.post('/:id/increment', (req, res) => {
-  const wo = db.prepare('SELECT * FROM work_orders WHERE id = ?').get(req.params.id);
+  const wo = db.prepare('SELECT * FROM work_orders WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!wo) return res.status(404).json({ error: 'Work order not found' });
 
   const newQty    = Math.min(wo.quantity_completed + 1, wo.quantity);
@@ -202,7 +202,7 @@ router.post('/:id/increment', (req, res) => {
 // ─── DELETE /:id ──────────────────────────────────────────────────────────────
 
 router.delete('/:id', (req, res) => {
-  const wo = db.prepare('SELECT id FROM work_orders WHERE id = ?').get(req.params.id);
+  const wo = db.prepare('SELECT id FROM work_orders WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!wo) return res.status(404).json({ error: 'Work order not found' });
   db.prepare('DELETE FROM work_orders WHERE id = ?').run(req.params.id);
   res.json({ success: true });

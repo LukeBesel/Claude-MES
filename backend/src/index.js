@@ -10,6 +10,16 @@ const analyticsRouter   = require('./routes/analytics');
 const { router: workOrdersRouter } = require('./routes/workorders');
 const departmentsRouter  = require('./routes/departments');
 const productTypesRouter = require('./routes/product-types');
+const oeeRouter          = require('./routes/oee');
+const dashboardsRouter   = require('./routes/dashboards');
+const inventoryRouter    = require('./routes/inventory');
+const purchasingRouter   = require('./routes/purchasing');
+const qualityRouter      = require('./routes/quality');
+const configRouter       = require('./routes/config');
+const exportRouter       = require('./routes/export');
+const authRouter         = require('./routes/auth');
+const usersRouter        = require('./routes/users');
+const { requireAuth }    = require('./middleware/auth');
 
 const app  = express();
 const PORT = process.env.PORT || 3001;
@@ -17,6 +27,8 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
+app.use('/api/auth',          authRouter);  // public
+app.use('/api',               requireAuth); // protect everything below
 app.use('/api/apps',          appsRouter);
 app.use('/api/completions',   completionsRouter);
 app.use('/api/tables',        tablesRouter);
@@ -25,6 +37,14 @@ app.use('/api/analytics',     analyticsRouter);
 app.use('/api/work-orders',   workOrdersRouter);
 app.use('/api/departments',   departmentsRouter);
 app.use('/api/product-types', productTypesRouter);
+app.use('/api/oee',           oeeRouter);
+app.use('/api/dashboards',    dashboardsRouter);
+app.use('/api/inventory',     inventoryRouter);
+app.use('/api/purchasing',    purchasingRouter);
+app.use('/api/quality',       qualityRouter);
+app.use('/api/config',        configRouter);
+app.use('/api/export',        exportRouter);
+app.use('/api/users',         usersRouter);
 
 const frontendDist = path.join(__dirname, '..', '..', 'frontend', 'dist');
 app.use(express.static(frontendDist));
@@ -33,5 +53,5 @@ app.get('*', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Claude MES backend running on http://localhost:${PORT}`);
+  console.log(`HartMonitor backend running on http://localhost:${PORT}`);
 });

@@ -10,9 +10,9 @@ function parseType(pt) {
 
 router.get('/', (req, res) => {
   const { app_id } = req.query;
-  let query = 'SELECT * FROM product_types';
-  const params = [];
-  if (app_id) { query += ' WHERE app_id = ?'; params.push(app_id); }
+  let query = 'SELECT * FROM product_types WHERE company_id = ?';
+  const params = [req.companyId];
+  if (app_id) { query += ' AND app_id = ?'; params.push(app_id); }
   query += ' ORDER BY name ASC';
   res.json(db.prepare(query).all(...params).map(parseType));
 });
@@ -20,16 +20,16 @@ router.get('/', (req, res) => {
 router.post('/', (req, res) => {
   const { app_id, name, description = '', takt_overrides = {} } = req.body;
   if (!app_id || !name) return res.status(400).json({ error: 'app_id and name required' });
-  const app = db.prepare('SELECT id FROM apps WHERE id = ?').get(app_id);
+  const app = db.prepare('SELECT id FROM apps WHERE id = ? AND company_id = ?').get(app_id, req.companyId);
   if (!app) return res.status(404).json({ error: 'App not found' });
   const id = uuidv4();
-  db.prepare('INSERT INTO product_types (id, app_id, name, description, takt_overrides) VALUES (?, ?, ?, ?, ?)')
-    .run(id, app_id, name, description, JSON.stringify(takt_overrides));
+  db.prepare('INSERT INTO product_types (id, app_id, name, description, takt_overrides, company_id) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(id, app_id, name, description, JSON.stringify(takt_overrides), req.companyId);
   res.status(201).json(parseType(db.prepare('SELECT * FROM product_types WHERE id = ?').get(id)));
 });
 
 router.put('/:id', (req, res) => {
-  const pt = db.prepare('SELECT * FROM product_types WHERE id = ?').get(req.params.id);
+  const pt = db.prepare('SELECT * FROM product_types WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!pt) return res.status(404).json({ error: 'Not found' });
   const { name, description, takt_overrides } = req.body;
   db.prepare(`UPDATE product_types SET name=?, description=?, takt_overrides=?, updated_at=datetime('now') WHERE id=?`)
@@ -43,7 +43,7 @@ router.put('/:id', (req, res) => {
 });
 
 router.delete('/:id', (req, res) => {
-  const pt = db.prepare('SELECT id FROM product_types WHERE id = ?').get(req.params.id);
+  const pt = db.prepare('SELECT id FROM product_types WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!pt) return res.status(404).json({ error: 'Not found' });
   db.prepare('DELETE FROM product_types WHERE id = ?').run(req.params.id);
   res.json({ success: true });

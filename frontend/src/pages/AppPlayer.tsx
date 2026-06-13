@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
-import { App, Widget, Step, WorkOrder, ProductType } from '../types';
+import { App, Widget, Step, WorkOrder, ProductType, Station } from '../types';
 import {
   ChevronLeft, ChevronRight, CheckCircle, X, Clock, Factory,
   AlertCircle, Loader2, AlertTriangle, Zap, Tag
@@ -14,6 +14,7 @@ export default function AppPlayer() {
   const [app, setApp] = useState<App | null>(null);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [productTypes, setProductTypes] = useState<ProductType[]>([]);
+  const [stations, setStations] = useState<Station[]>([]);
   const [currentStepIdx, setCurrentStepIdx] = useState(0);
   const [formData, setFormData] = useState<Record<string, any>>({});
   const [stepTimes, setStepTimes] = useState<Record<number, number>>({});
@@ -24,21 +25,26 @@ export default function AppPlayer() {
   const [operatorName, setOperatorName] = useState('');
   const [selectedWorkOrderId, setSelectedWorkOrderId] = useState('');
   const [selectedProductTypeId, setSelectedProductTypeId] = useState('');
+  const [selectedStationId, setSelectedStationId] = useState(() => localStorage.getItem('hm_station') || '');
   const [loading, setLoading] = useState(true);
   const [taktExceededSteps, setTaktExceededSteps] = useState<number[]>([]);
   const [flashPhase, setFlashPhase] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   useEffect(() => {
     if (id) {
-      Promise.all([api.getApp(id), api.getWorkOrders(), api.getProductTypes(id)]).then(([a, wos, pts]) => {
+      Promise.all([api.getApp(id), api.getWorkOrders(), api.getProductTypes(id), api.getStations()]).then(([a, wos, pts, sts]) => {
         setApp(a);
         setWorkOrders(wos.filter((w: WorkOrder) => w.app_id === id && w.status !== 'completed' && w.status !== 'cancelled'));
         setProductTypes(pts);
-        // Pre-fill from URL params (coming from Operator Portal)
+        setStations(sts.filter((s: Station) => s.status === 'active'));
+        // Pre-fill from URL params (coming from Operator Portal or a station kiosk link)
         const woParam = searchParams.get('wo');
         const nameParam = searchParams.get('name');
+        const stationParam = searchParams.get('station');
         if (woParam) setSelectedWorkOrderId(woParam);
         if (nameParam) setOperatorName(nameParam);
+        if (stationParam) setSelectedStationId(stationParam);
         setLoading(false);
       });
     }
@@ -86,11 +92,14 @@ export default function AppPlayer() {
 
   const startRun = async () => {
     if (!app || !id) return;
+    if (selectedStationId) localStorage.setItem('hm_station', selectedStationId);
+    else localStorage.removeItem('hm_station');
     const c = await api.createCompletion({
       app_id: id,
       operator_name: operatorName || 'Operator',
       work_order_id: selectedWorkOrderId || undefined,
       product_type_id: selectedProductTypeId || undefined,
+      station_id: selectedStationId || undefined,
     });
     setCompletionId(c.id);
     setStepStartTime(Date.now());
@@ -103,8 +112,29 @@ export default function AppPlayer() {
     setStepTimes(prev => ({ ...prev, [stepIdx]: elapsed }));
   }, [stepStartTime]);
 
+  const REQUIRED_WIDGET_TYPES = ['text-input', 'number-input', 'select-input', 'checkbox'];
+
+  const getMissingRequiredFields = (stepIdx: number): string[] => {
+    const step = app?.steps[stepIdx];
+    if (!step) return [];
+    return step.widgets
+      .filter(w => REQUIRED_WIDGET_TYPES.includes(w.type) && w.config.required)
+      .filter(w => {
+        const val = formData[w.config.variableName || w.id];
+        if (w.type === 'checkbox') return val !== true;
+        return val === undefined || val === null || val === '';
+      })
+      .map(w => w.label || 'This field');
+  };
+
   const goNext = () => {
     if (!app) return;
+    const missing = getMissingRequiredFields(currentStepIdx);
+    if (missing.length > 0) {
+      setValidationError(`Please fill in required field${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}`);
+      return;
+    }
+    setValidationError(null);
     recordStepTime(currentStepIdx);
     setCurrentStepIdx(i => i + 1);
     setStepStartTime(Date.now());
@@ -112,6 +142,7 @@ export default function AppPlayer() {
   };
 
   const goPrev = () => {
+    setValidationError(null);
     recordStepTime(currentStepIdx);
     setCurrentStepIdx(i => Math.max(0, i - 1));
     setStepStartTime(Date.now());
@@ -120,6 +151,12 @@ export default function AppPlayer() {
 
   const complete = async () => {
     if (!completionId || !app) return;
+    const missing = getMissingRequiredFields(currentStepIdx);
+    if (missing.length > 0) {
+      setValidationError(`Please fill in required field${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}`);
+      return;
+    }
+    setValidationError(null);
     recordStepTime(currentStepIdx);
     const finalStepTimes = { ...stepTimes, [currentStepIdx]: Math.round((Date.now() - stepStartTime) / 1000) };
     await api.updateCompletion(completionId, {
@@ -137,7 +174,10 @@ export default function AppPlayer() {
     setStatus('abandoned');
   };
 
-  const updateField = (key: string, value: any) => setFormData(prev => ({ ...prev, [key]: value }));
+  const updateField = (key: string, value: any) => {
+    setFormData(prev => ({ ...prev, [key]: value }));
+    setValidationError(null);
+  };
 
   if (loading) return (
     <div className="flex items-center justify-center h-screen bg-gray-950">
@@ -178,6 +218,17 @@ export default function AppPlayer() {
               <input className="input-field" placeholder="Enter your name..." value={operatorName}
                 onChange={e => setOperatorName(e.target.value)} onKeyDown={e => e.key === 'Enter' && startRun()} autoFocus />
             </div>
+            {stations.length > 0 && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">Station (optional)</label>
+                <select className="input-field" value={selectedStationId} onChange={e => setSelectedStationId(e.target.value)}>
+                  <option value="">— No station —</option>
+                  {stations.map(s => (
+                    <option key={s.id} value={s.id}>{s.name}{s.location ? ` · ${s.location}` : ''}</option>
+                  ))}
+                </select>
+              </div>
+            )}
             {productTypes.length > 0 && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-1.5">
@@ -390,6 +441,12 @@ export default function AppPlayer() {
               </div>
             )}
           </div>
+          {validationError && (
+            <div className="flex items-center gap-2 px-4 py-3 bg-red-900/40 border border-red-700 rounded-xl text-red-300 text-sm font-medium">
+              <AlertCircle size={16} className="flex-shrink-0" />
+              {validationError}
+            </div>
+          )}
           {currentStep?.widgets.map(widget => (
             <PlayerWidget
               key={widget.id}
@@ -486,7 +543,7 @@ function PlayerWidget({ widget, value, onChange, onNext, onPrev, onComplete, isL
     case 'select-input':
       return (
         <div>
-          {widget.label && <label className="block text-sm font-medium text-gray-300 mb-2">{widget.label}</label>}
+          {widget.label && <label className="block text-sm font-medium text-gray-300 mb-2">{widget.label}{config.required && <span className="text-red-400 ml-1">*</span>}</label>}
           <div className="flex flex-wrap gap-2">
             {(config.options || []).map(opt => (
               <button key={opt} onClick={() => onChange(opt)}
@@ -503,7 +560,7 @@ function PlayerWidget({ widget, value, onChange, onNext, onPrev, onComplete, isL
           <div className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center flex-shrink-0 transition-colors ${value ? 'bg-blue-600 border-blue-500' : 'border-gray-600'}`} onClick={() => onChange(!value)}>
             {value && <CheckCircle size={14} className="text-white" />}
           </div>
-          <span className="text-gray-200 font-medium">{widget.label}</span>
+          <span className="text-gray-200 font-medium">{widget.label}{config.required && <span className="text-red-400 ml-1">*</span>}</span>
         </label>
       );
     case 'timer': {

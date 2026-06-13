@@ -5,7 +5,7 @@ const db = require('../db');
 const router = express.Router();
 
 router.get('/', (req, res) => {
-  const tables = db.prepare('SELECT * FROM tables ORDER BY name').all();
+  const tables = db.prepare('SELECT * FROM tables WHERE company_id = ? ORDER BY name').all(req.companyId);
   res.json(tables.map(t => ({
     ...t,
     fields: JSON.parse(t.fields),
@@ -17,20 +17,21 @@ router.post('/', (req, res) => {
   const { name, description = '', fields = [] } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
   const id = uuidv4();
-  db.prepare('INSERT INTO tables (id, name, description, fields) VALUES (?, ?, ?, ?)').run(id, name, description, JSON.stringify(fields));
+  db.prepare('INSERT INTO tables (id, name, description, fields, company_id) VALUES (?, ?, ?, ?, ?)')
+    .run(id, name, description, JSON.stringify(fields), req.companyId);
   const table = db.prepare('SELECT * FROM tables WHERE id = ?').get(id);
   res.status(201).json({ ...table, fields: JSON.parse(table.fields), record_count: 0 });
 });
 
 router.get('/:id', (req, res) => {
-  const table = db.prepare('SELECT * FROM tables WHERE id = ?').get(req.params.id);
+  const table = db.prepare('SELECT * FROM tables WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!table) return res.status(404).json({ error: 'Not found' });
   res.json({ ...table, fields: JSON.parse(table.fields) });
 });
 
 router.put('/:id', (req, res) => {
   const { name, description, fields } = req.body;
-  const table = db.prepare('SELECT * FROM tables WHERE id = ?').get(req.params.id);
+  const table = db.prepare('SELECT * FROM tables WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!table) return res.status(404).json({ error: 'Not found' });
   const updates = {
     name: name ?? table.name,
@@ -44,19 +45,24 @@ router.put('/:id', (req, res) => {
 });
 
 router.delete('/:id', (req, res) => {
-  db.prepare('DELETE FROM tables WHERE id = ?').run(req.params.id);
+  db.prepare('DELETE FROM tables WHERE id = ? AND company_id = ?').run(req.params.id, req.companyId);
   res.json({ success: true });
 });
 
+// Records scope through their parent table's company_id
+function ownedTable(req) {
+  return db.prepare('SELECT * FROM tables WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
+}
+
 router.get('/:id/records', (req, res) => {
+  if (!ownedTable(req)) return res.status(404).json({ error: 'Not found' });
   const records = db.prepare('SELECT * FROM table_records WHERE table_id = ? ORDER BY created_at DESC').all(req.params.id);
   res.json(records.map(r => ({ ...r, data: JSON.parse(r.data) })));
 });
 
 router.post('/:id/records', (req, res) => {
   const { data = {} } = req.body;
-  const table = db.prepare('SELECT * FROM tables WHERE id = ?').get(req.params.id);
-  if (!table) return res.status(404).json({ error: 'Table not found' });
+  if (!ownedTable(req)) return res.status(404).json({ error: 'Table not found' });
   const id = uuidv4();
   db.prepare('INSERT INTO table_records (id, table_id, data) VALUES (?, ?, ?)').run(id, req.params.id, JSON.stringify(data));
   const record = db.prepare('SELECT * FROM table_records WHERE id = ?').get(id);
@@ -65,6 +71,7 @@ router.post('/:id/records', (req, res) => {
 
 router.put('/:id/records/:recordId', (req, res) => {
   const { data } = req.body;
+  if (!ownedTable(req)) return res.status(404).json({ error: 'Not found' });
   const record = db.prepare('SELECT * FROM table_records WHERE id = ? AND table_id = ?').get(req.params.recordId, req.params.id);
   if (!record) return res.status(404).json({ error: 'Not found' });
   db.prepare(`UPDATE table_records SET data=?, updated_at=datetime('now') WHERE id=?`).run(JSON.stringify(data), req.params.recordId);
@@ -73,6 +80,7 @@ router.put('/:id/records/:recordId', (req, res) => {
 });
 
 router.delete('/:id/records/:recordId', (req, res) => {
+  if (!ownedTable(req)) return res.status(404).json({ error: 'Not found' });
   db.prepare('DELETE FROM table_records WHERE id = ? AND table_id = ?').run(req.params.recordId, req.params.id);
   res.json({ success: true });
 });

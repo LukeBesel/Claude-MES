@@ -1,230 +1,424 @@
-import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useEffect, useState, useCallback } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
-import { AnalyticsOverview, App, Completion } from '../types';
+import { useAuth } from '../context/AuthContext';
 import {
-  CheckCircle, Clock, Zap, TrendingUp, Play, AlertCircle,
-  ArrowRight, Users, BarChart2
+  TrendingUp, TrendingDown, Activity, CheckCircle, Cpu,
+  ShieldCheck, ShoppingCart, RefreshCw, CalendarCheck,
+  ExternalLink, Plus, BarChart2, Monitor, Layers,
+  AlertTriangle, Package, CheckCircle2, ChevronRight, Wrench, Lock
 } from 'lucide-react';
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import {
+  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  CartesianGrid, ReferenceLine
+} from 'recharts';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface AttentionItem {
+  type: 'wo_overdue' | 'wo_behind' | 'station_down' | 'ncr_critical' | 'stock_low' | 'po_late';
+  severity: 'red' | 'amber';
+  label: string;
+  detail: string;
+  link: string;
+}
+
+interface DailyBrief {
+  attention: AttentionItem[];
+  kpis: {
+    completed_today: number;
+    vs_7day_avg_pct: number | null;
+    active_now: number;
+    pass_rate_7d: number | null;
+    schedule_adherence: number | null;
+    work_orders_on_track: number;
+    work_orders_total: number;
+  };
+  due_soon: Array<{
+    id: string; work_order_number: string; part_name: string;
+    department_name: string | null; quantity: number; quantity_completed: number;
+    completion_pct: number; scheduled_end: string; priority: string;
+    schedule_status: string;
+  }>;
+  throughput_7d: Array<{ date: string; count: number }>;
+  week_avg_per_day: number;
+  is_pro: boolean;
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function getGreeting(): string {
+  const h = new Date().getHours();
+  if (h >= 5 && h < 12) return 'Good morning';
+  if (h >= 12 && h < 18) return 'Good afternoon';
+  return 'Good evening';
+}
+
+function formatDate(): string {
+  return new Date().toLocaleDateString('en-US', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+  });
+}
+
+const ATTENTION_ICONS: Record<AttentionItem['type'], React.ReactNode> = {
+  wo_overdue:   <CalendarCheck size={15} />,
+  wo_behind:    <CalendarCheck size={15} />,
+  station_down: <Wrench size={15} />,
+  ncr_critical: <ShieldCheck size={15} />,
+  stock_low:    <Package size={15} />,
+  po_late:      <ShoppingCart size={15} />,
+};
+
+const ATTENTION_TYPE_LABELS: Record<AttentionItem['type'], string> = {
+  wo_overdue:   'Work order overdue',
+  wo_behind:    'Work order behind',
+  station_down: 'Station down',
+  ncr_critical: 'Critical NCR',
+  stock_low:    'Low stock',
+  po_late:      'Late delivery',
+};
+
+const SCHEDULE_PILL: Record<string, string> = {
+  on_track:    'bg-green-100 text-green-700',
+  at_risk:     'bg-amber-100 text-amber-700',
+  behind:      'bg-red-100 text-red-700',
+  overdue:     'bg-red-200 text-red-800',
+  not_started: 'bg-gray-100 text-gray-600',
+  completed:   'bg-blue-100 text-blue-700',
+};
+
+function SkeletonBox({ className = '' }: { className?: string }) {
+  return <div className={`bg-gray-200 animate-pulse rounded ${className}`} />;
+}
+
+// ─── KPI card with delta ──────────────────────────────────────────────────────
+
+function DeltaStatCard({ label, value, delta, deltaLabel, icon, iconBg, iconColor, pulse }: {
+  label: string;
+  value: React.ReactNode;
+  delta?: number | null;
+  deltaLabel?: string;
+  icon: React.ReactNode;
+  iconBg: string;
+  iconColor: string;
+  pulse?: boolean;
+}) {
+  return (
+    <div className="stat-card">
+      <div className="flex items-start gap-3">
+        <div className={`relative w-10 h-10 ${iconBg} rounded-lg flex items-center justify-center flex-shrink-0`}>
+          <span className={iconColor}>{icon}</span>
+          {pulse && (
+            <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-amber-400">
+              <span className="absolute inset-0 rounded-full bg-amber-400 animate-ping opacity-75" />
+            </span>
+          )}
+        </div>
+        <div className="min-w-0">
+          <div className="text-2xl font-bold text-gray-900 leading-none">{value}</div>
+          <div className="text-xs font-medium text-gray-600 mt-0.5">{label}</div>
+          {delta !== undefined && delta !== null ? (
+            <div className={`flex items-center gap-1 text-xs mt-0.5 font-medium ${delta >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+              {delta >= 0 ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
+              {delta >= 0 ? '+' : ''}{delta}% {deltaLabel}
+            </div>
+          ) : deltaLabel ? (
+            <div className="text-xs text-gray-400 mt-0.5">{deltaLabel}</div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Quick Action ─────────────────────────────────────────────────────────────
+
+function QuickAction({ icon, label, to, newTab, color = 'text-gray-600' }: {
+  icon: React.ReactNode; label: string; to: string; newTab?: boolean; color?: string;
+}) {
+  const navigate = useNavigate();
+  const handleClick = () => {
+    if (newTab) window.open(to, '_blank');
+    else navigate(to);
+  };
+  return (
+    <button
+      onClick={handleClick}
+      className="card p-4 flex flex-col items-center gap-2 hover:shadow-md hover:-translate-y-0.5 transition-all duration-150 cursor-pointer text-center group"
+    >
+      <div className={`w-10 h-10 rounded-lg bg-gray-50 group-hover:bg-blue-50 flex items-center justify-center transition-colors ${color} group-hover:text-blue-600`}>
+        {icon}
+      </div>
+      <span className="text-xs font-medium text-gray-700 group-hover:text-blue-700 transition-colors leading-tight">
+        {label}
+      </span>
+    </button>
+  );
+}
+
+// ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
-  const [overview, setOverview] = useState<AnalyticsOverview | null>(null);
-  const [throughput, setThroughput] = useState<any[]>([]);
-  const [recentCompletions, setRecentCompletions] = useState<Completion[]>([]);
-  const [apps, setApps] = useState<App[]>([]);
+  const { user, isAtLeast } = useAuth();
+  const [brief, setBrief] = useState<DailyBrief | null>(null);
+  const [companyName, setCompanyName] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
-  useEffect(() => {
-    Promise.all([
-      api.getOverview(),
-      api.getThroughput(14),
-      api.getCompletions({ limit: 8 }),
-      api.getApps(),
-    ]).then(([ov, tp, comps, appList]) => {
-      setOverview(ov);
-      setThroughput(tp);
-      setRecentCompletions(comps);
-      setApps(appList);
-    });
+  const loadData = useCallback(async (isRefresh = false) => {
+    if (isRefresh) setRefreshing(true);
+    const [briefRes, cfgRes] = await Promise.allSettled([
+      api.getDailyBrief(),
+      api.getCompanySettings(),
+    ]);
+    if (briefRes.status === 'fulfilled') setBrief(briefRes.value);
+    if (cfgRes.status === 'fulfilled') setCompanyName(cfgRes.value?.company_name ?? '');
+    setLoading(false);
+    setRefreshing(false);
   }, []);
 
-  const publishedApps = apps.filter(a => a.status === 'published');
+  useEffect(() => {
+    loadData();
+    const interval = setInterval(() => loadData(), 60000);
+    return () => clearInterval(interval);
+  }, [loadData]);
+
+  const kpis = brief?.kpis;
+  const attention = brief?.attention ?? [];
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-          <p className="text-gray-500 text-sm mt-0.5">Manufacturing operations overview</p>
+          <h1 className="text-2xl font-bold text-gray-900">
+            {getGreeting()}{user?.display_name ? `, ${user.display_name.split(' ')[0]}` : ''}
+          </h1>
+          <p className="text-gray-500 text-sm mt-0.5">
+            {formatDate()}{companyName ? ` · ${companyName}` : ''}
+          </p>
         </div>
-        <Link to="/apps" className="btn-primary">
-          <Zap size={14} />
-          New App
-        </Link>
+        <button
+          onClick={() => loadData(true)}
+          className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50 shadow-sm"
+        >
+          <RefreshCw size={14} className={refreshing ? 'animate-spin text-blue-500' : ''} />
+          Refresh
+        </button>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-4 gap-4">
-        <StatCard
-          icon={<CheckCircle size={20} className="text-green-600" />}
-          bg="bg-green-50"
-          label="Today's Completions"
-          value={overview?.todayCompletions ?? '—'}
-          sub={`${overview?.totalCompletions ?? 0} total`}
-        />
-        <StatCard
-          icon={<Clock size={20} className="text-blue-600" />}
-          bg="bg-blue-50"
-          label="Avg Cycle Time"
-          value={overview ? `${overview.avgCycleTime}m` : '—'}
-          sub="per completion"
-        />
-        <StatCard
-          icon={<TrendingUp size={20} className="text-purple-600" />}
-          bg="bg-purple-50"
-          label="Pass Rate"
-          value={overview ? `${overview.passRate}%` : '—'}
-          sub="quality checks"
-        />
-        <StatCard
-          icon={<Zap size={20} className="text-orange-600" />}
-          bg="bg-orange-50"
-          label="In Progress"
-          value={overview?.inProgress ?? '—'}
-          sub={`${overview?.activeStations ?? 0} active stations`}
-        />
-      </div>
-
-      <div className="grid grid-cols-3 gap-6">
-        {/* Throughput chart */}
-        <div className="col-span-2 card p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="font-semibold text-gray-900">Daily Throughput</h2>
-            <span className="text-xs text-gray-400">Last 14 days</span>
-          </div>
-          <ResponsiveContainer width="100%" height={180}>
-            <AreaChart data={throughput}>
-              <defs>
-                <linearGradient id="tpGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.2} />
-                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <XAxis dataKey="date" tick={{ fontSize: 11 }} tickFormatter={d => d.slice(5)} />
-              <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
-              <Tooltip formatter={(v) => [v, 'Completions']} labelFormatter={l => `Date: ${l}`} />
-              <Area type="monotone" dataKey="count" stroke="#3b82f6" fill="url(#tpGrad)" strokeWidth={2} />
-            </AreaChart>
-          </ResponsiveContainer>
+      {/* Needs attention */}
+      <div className="card p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <AlertTriangle size={16} className={attention.length > 0 ? 'text-red-500' : 'text-gray-300'} />
+          <h2 className="font-semibold text-gray-900">Needs Attention</h2>
+          {attention.length > 0 && (
+            <span className="bg-red-100 text-red-700 text-xs font-semibold px-2 py-0.5 rounded-full">
+              {attention.length}
+            </span>
+          )}
         </div>
-
-        {/* Quick stats */}
-        <div className="card p-5 space-y-4">
-          <h2 className="font-semibold text-gray-900">Platform Status</h2>
-          <div className="space-y-3">
-            <PlatformStat label="Published Apps" value={overview?.publishedApps ?? 0} total={overview?.totalApps ?? 0} color="blue" />
-            <PlatformStat label="Active Stations" value={overview?.activeStations ?? 0} total={overview?.activeStations ?? 0} color="green" />
-          </div>
-          <div className="pt-2 border-t border-gray-100 space-y-2">
-            <Link to="/apps" className="flex items-center justify-between text-sm text-blue-600 hover:text-blue-700">
-              <span>View all apps</span>
-              <ArrowRight size={14} />
-            </Link>
-            <Link to="/analytics" className="flex items-center justify-between text-sm text-blue-600 hover:text-blue-700">
-              <span>Full analytics</span>
-              <ArrowRight size={14} />
-            </Link>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-6">
-        {/* Published apps */}
-        <div className="card p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="font-semibold text-gray-900">Published Apps</h2>
-            <Link to="/apps" className="text-xs text-blue-600 hover:text-blue-700">View all</Link>
-          </div>
+        {loading ? (
           <div className="space-y-2">
-            {publishedApps.length === 0 && (
-              <p className="text-gray-400 text-sm text-center py-4">No published apps yet</p>
-            )}
-            {publishedApps.slice(0, 5).map(app => (
-              <div key={app.id} className="flex items-center justify-between p-3 rounded-lg bg-gray-50 hover:bg-gray-100 transition-colors">
-                <div>
-                  <div className="font-medium text-sm text-gray-900">{app.name}</div>
-                  <div className="text-xs text-gray-500">{app.steps.length} steps</div>
-                </div>
-                <Link
-                  to={`/play/${app.id}`}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-medium hover:bg-blue-700 transition-colors"
-                >
-                  <Play size={11} />
-                  Run
-                </Link>
-              </div>
-            ))}
+            {[1, 2, 3].map(i => <SkeletonBox key={i} className="h-12 w-full" />)}
           </div>
-        </div>
-
-        {/* Recent completions */}
-        <div className="card p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="font-semibold text-gray-900">Recent Activity</h2>
-            <Link to="/analytics" className="text-xs text-blue-600 hover:text-blue-700">View all</Link>
+        ) : attention.length === 0 ? (
+          <div className="text-center py-6">
+            <CheckCircle2 size={30} className="text-green-400 mx-auto mb-2" />
+            <p className="text-gray-500 text-sm font-medium">Nothing needs your attention right now</p>
+            <p className="text-gray-400 text-xs mt-0.5">Work orders are on schedule, no critical issues open.</p>
           </div>
+        ) : (
           <div className="space-y-2">
-            {recentCompletions.length === 0 && (
-              <p className="text-gray-400 text-sm text-center py-4">No completions yet</p>
-            )}
-            {recentCompletions.map(c => (
-              <div key={c.id} className="flex items-center gap-3 p-3 rounded-lg bg-gray-50">
-                <StatusDot status={c.status} />
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-xs text-gray-900 truncate">{c.app_name}</div>
-                  <div className="text-xs text-gray-500">{c.operator_name} · {formatTime(c.started_at)}</div>
-                </div>
-                <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                  c.status === 'completed' ? 'bg-green-100 text-green-700' :
-                  c.status === 'in_progress' ? 'bg-blue-100 text-blue-700' :
-                  'bg-gray-100 text-gray-600'
-                }`}>
-                  {c.status === 'in_progress' ? 'Running' : c.status}
+            {attention.map((item, i) => (
+              <Link
+                key={`${item.type}-${i}`}
+                to={item.link}
+                className={`flex items-center gap-3 p-3 rounded-lg border transition-colors group ${
+                  item.severity === 'red'
+                    ? 'bg-red-50 border-red-200 hover:bg-red-100'
+                    : 'bg-amber-50 border-amber-200 hover:bg-amber-100'
+                }`}
+              >
+                <span className={`flex-shrink-0 ${item.severity === 'red' ? 'text-red-500' : 'text-amber-500'}`}>
+                  {ATTENTION_ICONS[item.type]}
                 </span>
-              </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`text-[11px] font-semibold uppercase tracking-wide ${item.severity === 'red' ? 'text-red-600' : 'text-amber-600'}`}>
+                      {ATTENTION_TYPE_LABELS[item.type]}
+                    </span>
+                    <span className="text-sm font-medium text-gray-900 truncate">{item.label}</span>
+                  </div>
+                  {item.detail && <div className="text-xs text-gray-500 truncate">{item.detail}</div>}
+                </div>
+                <ChevronRight size={15} className="text-gray-300 group-hover:text-gray-500 flex-shrink-0" />
+              </Link>
             ))}
           </div>
+        )}
+      </div>
+
+      {/* KPI row */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {loading ? (
+          [1, 2, 3, 4].map(i => <SkeletonBox key={i} className="h-24 w-full" />)
+        ) : (
+          <>
+            <DeltaStatCard
+              label="Completed Today"
+              value={kpis?.completed_today ?? 0}
+              delta={kpis?.vs_7day_avg_pct}
+              deltaLabel="vs 7-day avg"
+              icon={<CheckCircle size={18} />} iconBg="bg-green-50" iconColor="text-green-600"
+            />
+            <DeltaStatCard
+              label="Schedule Adherence"
+              value={kpis?.schedule_adherence !== null ? `${kpis?.schedule_adherence}%` : '—'}
+              deltaLabel={`${kpis?.work_orders_on_track ?? 0} of ${kpis?.work_orders_total ?? 0} WOs on track`}
+              icon={<CalendarCheck size={18} />} iconBg="bg-teal-50" iconColor="text-teal-600"
+            />
+            <DeltaStatCard
+              label="Pass Rate (7 days)"
+              value={kpis?.pass_rate_7d !== null ? `${kpis?.pass_rate_7d}%` : '—'}
+              deltaLabel="from QC results"
+              icon={<TrendingUp size={18} />} iconBg="bg-purple-50" iconColor="text-purple-600"
+            />
+            <DeltaStatCard
+              label="Active Now"
+              value={kpis?.active_now ?? 0}
+              deltaLabel="processes running"
+              icon={<Activity size={18} />} iconBg="bg-blue-50" iconColor="text-blue-600"
+              pulse={(kpis?.active_now ?? 0) > 0}
+            />
+          </>
+        )}
+      </div>
+
+      {/* Due soon + throughput */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="card p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-semibold text-gray-900">Due in the Next 48 Hours</h2>
+            <Link to="/schedule" className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1">
+              View schedule <ChevronRight size={12} />
+            </Link>
+          </div>
+          {loading ? (
+            <div className="space-y-2">{[1, 2, 3].map(i => <SkeletonBox key={i} className="h-14 w-full" />)}</div>
+          ) : (brief?.due_soon ?? []).length === 0 ? (
+            <div className="text-center py-8">
+              <CheckCircle2 size={26} className="text-green-400 mx-auto mb-2" />
+              <p className="text-gray-400 text-sm">Nothing due in the next two days</p>
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {brief!.due_soon.map(wo => (
+                <div key={wo.id} className="border border-gray-100 rounded-lg p-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="font-semibold text-xs text-gray-900">{wo.work_order_number}</span>
+                      <span className={`text-[11px] px-1.5 py-0.5 rounded-full font-medium flex-shrink-0 ${SCHEDULE_PILL[wo.schedule_status] ?? 'bg-gray-100 text-gray-600'}`}>
+                        {wo.schedule_status.replace('_', ' ')}
+                      </span>
+                    </div>
+                    <span className="text-xs text-gray-400 flex-shrink-0">
+                      due {new Date(wo.scheduled_end).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                    </span>
+                  </div>
+                  <div className="text-xs text-gray-600 truncate mb-1.5">
+                    {wo.part_name}{wo.department_name ? ` · ${wo.department_name}` : ''}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${
+                          wo.schedule_status === 'overdue' || wo.schedule_status === 'behind' ? 'bg-red-500' :
+                          wo.schedule_status === 'at_risk' ? 'bg-amber-500' : 'bg-green-500'
+                        }`}
+                        style={{ width: `${wo.completion_pct}%` }}
+                      />
+                    </div>
+                    <span className="text-[11px] text-gray-500 tabular-nums">{wo.quantity_completed}/{wo.quantity}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="card p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-semibold text-gray-900">Output — Last 7 Days</h2>
+            <Link to="/analytics" className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1">
+              Analytics <ChevronRight size={12} />
+            </Link>
+          </div>
+          {loading ? (
+            <SkeletonBox className="h-52 w-full" />
+          ) : (
+            <ResponsiveContainer width="100%" height={220}>
+              <AreaChart data={brief?.throughput_7d ?? []} margin={{ left: 0, right: 10, top: 5, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="throughputFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.25} />
+                    <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
+                <XAxis
+                  dataKey="date" tick={{ fontSize: 10 }}
+                  tickFormatter={d => new Date(d + 'T00:00:00').toLocaleDateString([], { weekday: 'short' })}
+                />
+                <YAxis tick={{ fontSize: 11 }} allowDecimals={false} width={28} />
+                <Tooltip
+                  labelFormatter={d => new Date(d + 'T00:00:00').toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}
+                  formatter={(v: any) => [v, 'Completions']}
+                />
+                {(brief?.week_avg_per_day ?? 0) > 0 && (
+                  <ReferenceLine
+                    y={brief!.week_avg_per_day}
+                    stroke="#9ca3af" strokeDasharray="5 4"
+                    label={{ value: `avg ${brief!.week_avg_per_day}`, position: 'insideTopRight', style: { fontSize: 10, fill: '#9ca3af' } }}
+                  />
+                )}
+                <Area type="monotone" dataKey="count" stroke="#3b82f6" strokeWidth={2} fill="url(#throughputFill)" />
+              </AreaChart>
+            </ResponsiveContainer>
+          )}
         </div>
       </div>
-    </div>
-  );
-}
 
-function StatCard({ icon, bg, label, value, sub }: any) {
-  return (
-    <div className="stat-card">
-      <div className="flex items-center gap-3">
-        <div className={`w-10 h-10 ${bg} rounded-lg flex items-center justify-center`}>{icon}</div>
-        <div>
-          <div className="text-2xl font-bold text-gray-900">{value}</div>
-          <div className="text-xs text-gray-500 font-medium">{label}</div>
-          <div className="text-xs text-gray-400">{sub}</div>
+      {/* Quick Actions */}
+      <div>
+        <h2 className="font-semibold text-gray-700 text-sm mb-3">Quick Actions</h2>
+        <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
+          <QuickAction icon={<ExternalLink size={18} />} label="Start Operator Session" to="/operator" newTab color="text-green-600" />
+          {isAtLeast('supervisor') && (
+            <QuickAction icon={<Plus size={18} />} label="New Work Order" to="/schedule" color="text-blue-600" />
+          )}
+          {isAtLeast('supervisor') && (
+            <QuickAction icon={<Layers size={18} />} label="New App" to="/apps" color="text-purple-600" />
+          )}
+          <QuickAction icon={<BarChart2 size={18} />} label="View Analytics" to="/analytics" color="text-indigo-600" />
+          <QuickAction icon={<Cpu size={18} />} label="OEE Dashboard" to="/oee" color="text-amber-600" />
+          <QuickAction icon={<Monitor size={18} />} label="Plant View" to="/plant" color="text-pink-600" />
         </div>
       </div>
+
+      {/* Free-tier upgrade banner */}
+      {brief && !brief.is_pro && (
+        <Link to="/settings" className="flex items-center gap-3 p-4 rounded-xl border border-dashed border-amber-300 bg-amber-50 hover:bg-amber-100 transition-colors group">
+          <div className="w-9 h-9 bg-amber-100 rounded-lg flex items-center justify-center text-amber-600 flex-shrink-0">
+            <Lock size={16} />
+          </div>
+          <div className="flex-1">
+            <span className="text-sm font-semibold text-gray-800">Inventory, Quality and Purchasing alerts are available on Pro</span>
+            <span className="text-xs text-gray-500 block">Low-stock, critical NCR and late-PO warnings will appear in Needs Attention after upgrading.</span>
+          </div>
+          <ChevronRight size={16} className="text-amber-400 group-hover:text-amber-600" />
+        </Link>
+      )}
     </div>
   );
-}
-
-function PlatformStat({ label, value, total, color }: { label: string; value: number; total: number; color: string }) {
-  const pct = total > 0 ? (value / total) * 100 : 0;
-  return (
-    <div>
-      <div className="flex justify-between text-sm mb-1">
-        <span className="text-gray-700">{label}</span>
-        <span className="font-semibold">{value}</span>
-      </div>
-      <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-        <div className={`h-full bg-${color}-500 rounded-full`} style={{ width: `${pct}%` }} />
-      </div>
-    </div>
-  );
-}
-
-function StatusDot({ status }: { status: string }) {
-  return (
-    <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
-      status === 'completed' ? 'bg-green-500' :
-      status === 'in_progress' ? 'bg-blue-500' : 'bg-gray-400'
-    }`} />
-  );
-}
-
-function formatTime(iso: string) {
-  const d = new Date(iso);
-  const now = new Date();
-  const diff = now.getTime() - d.getTime();
-  if (diff < 60000) return 'just now';
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-  return d.toLocaleDateString();
 }
