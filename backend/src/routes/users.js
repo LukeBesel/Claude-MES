@@ -15,10 +15,10 @@ router.use(requireAuth, requireRole('manager'));
 router.get('/', (req, res) => {
   const users = db.prepare(`
     SELECT id, email, display_name, role, is_active, last_login, created_at, updated_at
-    FROM users ORDER BY CASE role
+    FROM users WHERE company_id = ? ORDER BY CASE role
       WHEN 'developer' THEN 1 WHEN 'manager' THEN 2 WHEN 'supervisor' THEN 3
       WHEN 'operator' THEN 4 ELSE 5 END, display_name
-  `).all();
+  `).all(req.companyId);
   res.json(users);
 });
 
@@ -30,12 +30,13 @@ router.post('/', requireRole('developer'), (req, res) => {
   if (!VALID_ROLES.includes(role)) return res.status(400).json({ error: `role must be one of: ${VALID_ROLES.join(', ')}` });
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
 
+  // Emails stay globally unique — login has no org discriminator
   const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email.toLowerCase().trim());
   if (existing) return res.status(409).json({ error: 'A user with that email already exists' });
 
   const id = uuidv4();
-  db.prepare(`INSERT INTO users (id, email, display_name, password_hash, role) VALUES (?, ?, ?, ?, ?)`)
-    .run(id, email.toLowerCase().trim(), display_name, hashPassword(password), role);
+  db.prepare(`INSERT INTO users (id, email, display_name, password_hash, role, company_id) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(id, email.toLowerCase().trim(), display_name, hashPassword(password), role, req.companyId);
   const user = db.prepare('SELECT id, email, display_name, role, is_active, created_at FROM users WHERE id = ?').get(id);
   res.status(201).json(user);
 });
@@ -43,7 +44,8 @@ router.post('/', requireRole('developer'), (req, res) => {
 // ─── GET /:id — get user ──────────────────────────────────────────────────────
 
 router.get('/:id', (req, res) => {
-  const user = db.prepare('SELECT id, email, display_name, role, is_active, last_login, created_at FROM users WHERE id = ?').get(req.params.id);
+  const user = db.prepare('SELECT id, email, display_name, role, is_active, last_login, created_at FROM users WHERE id = ? AND company_id = ?')
+    .get(req.params.id, req.companyId);
   if (!user) return res.status(404).json({ error: 'Not found' });
   res.json(user);
 });
@@ -51,7 +53,7 @@ router.get('/:id', (req, res) => {
 // ─── PUT /:id — update user ───────────────────────────────────────────────────
 
 router.put('/:id', requireRole('developer'), (req, res) => {
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
+  const user = db.prepare('SELECT * FROM users WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!user) return res.status(404).json({ error: 'Not found' });
 
   const { email, display_name, role, is_active, password } = req.body;
@@ -65,9 +67,10 @@ router.put('/:id', requireRole('developer'), (req, res) => {
     password_hash: password ? hashPassword(password) : user.password_hash,
   };
 
-  // Can't deactivate the last developer
+  // Can't deactivate the last developer in the organization
   if (updates.is_active === 0 || (updates.role !== 'developer' && user.role === 'developer')) {
-    const devCount = db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'developer' AND is_active = 1 AND id != ?").get(req.params.id).c;
+    const devCount = db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'developer' AND is_active = 1 AND company_id = ? AND id != ?")
+      .get(req.companyId, req.params.id).c;
     if (devCount === 0) return res.status(409).json({ error: 'Cannot deactivate the last developer account' });
   }
 
@@ -83,10 +86,10 @@ router.put('/:id', requireRole('developer'), (req, res) => {
 
 router.delete('/:id', requireRole('developer'), (req, res) => {
   if (req.params.id === req.user.id) return res.status(409).json({ error: 'Cannot delete your own account' });
-  const user = db.prepare('SELECT role FROM users WHERE id = ?').get(req.params.id);
+  const user = db.prepare('SELECT role FROM users WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!user) return res.status(404).json({ error: 'Not found' });
   if (user.role === 'developer') {
-    const devCount = db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'developer' AND is_active = 1").get().c;
+    const devCount = db.prepare("SELECT COUNT(*) as c FROM users WHERE role = 'developer' AND is_active = 1 AND company_id = ?").get(req.companyId).c;
     if (devCount <= 1) return res.status(409).json({ error: 'Cannot delete the last developer account' });
   }
   db.prepare('DELETE FROM sessions WHERE user_id = ?').run(req.params.id);

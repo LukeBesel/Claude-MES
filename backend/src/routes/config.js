@@ -39,11 +39,11 @@ const PRICING = {
   },
 };
 
-function getPlanRow() {
-  let plan = db.prepare('SELECT * FROM plan WHERE id = 1').get();
+function getPlanRow(companyId) {
+  let plan = db.prepare('SELECT * FROM plan WHERE company_id = ?').get(companyId);
   if (!plan) {
-    db.prepare(`INSERT INTO plan (id, tier, app_limit, dashboard_limit) VALUES (1, 'free', 3, 2)`).run();
-    plan = db.prepare('SELECT * FROM plan WHERE id = 1').get();
+    db.prepare(`INSERT INTO plan (tier, app_limit, dashboard_limit, company_id) VALUES ('free', 3, 2, ?)`).run(companyId);
+    plan = db.prepare('SELECT * FROM plan WHERE company_id = ?').get(companyId);
   }
   return plan;
 }
@@ -67,12 +67,12 @@ function monthlyTotal(plan) {
   return total;
 }
 
-function planResponse() {
-  const plan = getPlanRow();
-  const app_count        = db.prepare('SELECT COUNT(*) as c FROM apps').get().c;
-  const dashboard_count  = db.prepare('SELECT COUNT(*) as c FROM dashboards').get().c;
-  const completion_count = db.prepare('SELECT COUNT(*) as c FROM completions').get().c;
-  const billing = db.prepare('SELECT * FROM billing_history ORDER BY created_at DESC LIMIT 50').all();
+function planResponse(companyId) {
+  const plan = getPlanRow(companyId);
+  const app_count        = db.prepare('SELECT COUNT(*) as c FROM apps WHERE company_id = ?').get(companyId).c;
+  const dashboard_count  = db.prepare('SELECT COUNT(*) as c FROM dashboards WHERE company_id = ?').get(companyId).c;
+  const completion_count = db.prepare('SELECT COUNT(*) as c FROM completions WHERE company_id = ?').get(companyId).c;
+  const billing = db.prepare('SELECT * FROM billing_history WHERE company_id = ? ORDER BY created_at DESC LIMIT 50').all(companyId);
 
   return {
     ...plan,
@@ -90,7 +90,7 @@ function planResponse() {
 // ─── GET / — all company settings ────────────────────────────────────────────
 
 router.get('/', (req, res) => {
-  const rows = db.prepare('SELECT key, value FROM company_settings').all();
+  const rows = db.prepare('SELECT key, value FROM org_settings WHERE company_id = ?').all(req.companyId);
   const settings = {};
   for (const r of rows) settings[r.key] = r.value;
   res.json(settings);
@@ -99,14 +99,14 @@ router.get('/', (req, res) => {
 // ─── PUT / — bulk update settings (manager+) ──────────────────────────────────
 
 router.put('/', requireRole('manager'), (req, res) => {
-  const ins = db.prepare(`INSERT INTO company_settings (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`);
+  const ins = db.prepare(`INSERT INTO org_settings (company_id, key, value, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT(company_id, key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`);
   const upsertAll = db.transaction((data) => {
     for (const [key, value] of Object.entries(data)) {
-      if (typeof value !== 'undefined') ins.run(key, String(value));
+      if (typeof value !== 'undefined') ins.run(req.companyId, key, String(value));
     }
   });
   upsertAll(req.body);
-  const rows = db.prepare('SELECT key, value FROM company_settings').all();
+  const rows = db.prepare('SELECT key, value FROM org_settings WHERE company_id = ?').all(req.companyId);
   const settings = {};
   for (const r of rows) settings[r.key] = r.value;
   res.json(settings);
@@ -115,7 +115,7 @@ router.put('/', requireRole('manager'), (req, res) => {
 // ─── GET /plan — plan info + usage + pricing + billing history ────────────────
 
 router.get('/plan', (req, res) => {
-  res.json(planResponse());
+  res.json(planResponse(req.companyId));
 });
 
 // ─── PUT /plan — change tier (manager+) ───────────────────────────────────────
@@ -127,18 +127,18 @@ router.put('/plan', requireRole('manager'), (req, res) => {
     return res.status(400).json({ error: `tier must be one of: ${validTiers.join(', ')}` });
   }
 
-  const current = getPlanRow();
-  if (current.tier === tier) return res.json(planResponse());
+  const current = getPlanRow(req.companyId);
+  if (current.tier === tier) return res.json(planResponse(req.companyId));
 
   const def = PRICING.tiers[tier];
-  db.prepare(`UPDATE plan SET tier=?, app_limit=?, dashboard_limit=?, updated_at=datetime('now') WHERE id=1`)
-    .run(tier, def.app_limit, def.dashboard_limit);
+  db.prepare(`UPDATE plan SET tier=?, app_limit=?, dashboard_limit=?, updated_at=datetime('now') WHERE company_id=?`)
+    .run(tier, def.app_limit, def.dashboard_limit, req.companyId);
 
   const price = def.monthly_price ?? 0;
-  db.prepare(`INSERT INTO billing_history (id, type, description, quantity, unit_price, amount) VALUES (?, 'tier_change', ?, 1, ?, ?)`)
-    .run(uuidv4(), `Plan changed to ${def.name}${price ? ` — $${price}/mo` : ''}`, price, price);
+  db.prepare(`INSERT INTO billing_history (id, type, description, quantity, unit_price, amount, company_id) VALUES (?, 'tier_change', ?, 1, ?, ?, ?)`)
+    .run(uuidv4(), `Plan changed to ${def.name}${price ? ` — $${price}/mo` : ''}`, price, price, req.companyId);
 
-  res.json(planResponse());
+  res.json(planResponse(req.companyId));
 });
 
 // ─── POST /plan/purchase — buy à-la-carte add-on slots (manager+) ─────────────
@@ -152,19 +152,19 @@ router.post('/plan/purchase', requireRole('manager'), (req, res) => {
   const qty = Math.floor(Number(quantity));
   if (!Number.isFinite(qty) || qty < 1 || qty > 50) return res.status(400).json({ error: 'quantity must be between 1 and 50' });
 
-  const plan = getPlanRow();
+  const plan = getPlanRow(req.companyId);
   if (plan.app_limit < 0) {
     return res.status(409).json({ error: 'Your plan already includes unlimited capacity — add-on slots are only for the Free tier' });
   }
 
   const col = type === 'app_slot' ? 'extra_app_slots' : 'extra_dashboard_slots';
-  db.prepare(`UPDATE plan SET ${col} = ${col} + ?, updated_at = datetime('now') WHERE id = 1`).run(qty);
+  db.prepare(`UPDATE plan SET ${col} = ${col} + ?, updated_at = datetime('now') WHERE company_id = ?`).run(qty, req.companyId);
 
   const amount = addon.monthly_price * qty;
-  db.prepare(`INSERT INTO billing_history (id, type, description, quantity, unit_price, amount) VALUES (?, ?, ?, ?, ?, ?)`)
-    .run(uuidv4(), type, `${addon.name} ×${qty} — $${addon.monthly_price}/mo each`, qty, addon.monthly_price, amount);
+  db.prepare(`INSERT INTO billing_history (id, type, description, quantity, unit_price, amount, company_id) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(uuidv4(), type, `${addon.name} ×${qty} — $${addon.monthly_price}/mo each`, qty, addon.monthly_price, amount, req.companyId);
 
-  res.status(201).json(planResponse());
+  res.status(201).json(planResponse(req.companyId));
 });
 
 // ─── DELETE /plan/addon — remove add-on slots (manager+) ──────────────────────
@@ -174,7 +174,7 @@ router.delete('/plan/addon', requireRole('manager'), (req, res) => {
   const addon = PRICING.addons[type];
   if (!addon) return res.status(400).json({ error: `type must be one of: ${Object.keys(PRICING.addons).join(', ')}` });
 
-  const plan = getPlanRow();
+  const plan = getPlanRow(req.companyId);
   const col = type === 'app_slot' ? 'extra_app_slots' : 'extra_dashboard_slots';
   const owned = plan[col] || 0;
   const qty = Math.min(Math.floor(Number(quantity)) || 1, owned);
@@ -182,20 +182,21 @@ router.delete('/plan/addon', requireRole('manager'), (req, res) => {
 
   // Don't allow removing capacity that's already in use
   const usage = type === 'app_slot'
-    ? db.prepare('SELECT COUNT(*) as c FROM apps').get().c
-    : db.prepare('SELECT COUNT(*) as c FROM dashboards').get().c;
+    ? db.prepare('SELECT COUNT(*) as c FROM apps WHERE company_id = ?').get(req.companyId).c
+    : db.prepare('SELECT COUNT(*) as c FROM dashboards WHERE company_id = ?').get(req.companyId).c;
   const baseLimit = type === 'app_slot' ? plan.app_limit : plan.dashboard_limit;
   if (baseLimit >= 0 && usage > baseLimit + owned - qty) {
     return res.status(409).json({ error: `Cannot remove: ${usage} in use exceeds remaining capacity of ${baseLimit + owned - qty}. Delete some first.` });
   }
 
-  db.prepare(`UPDATE plan SET ${col} = ${col} - ?, updated_at = datetime('now') WHERE id = 1`).run(qty);
-  db.prepare(`INSERT INTO billing_history (id, type, description, quantity, unit_price, amount) VALUES (?, 'refund', ?, ?, ?, ?)`)
-    .run(uuidv4(), `Removed ${addon.name} ×${qty}`, qty, addon.monthly_price, -addon.monthly_price * qty);
+  db.prepare(`UPDATE plan SET ${col} = ${col} - ?, updated_at = datetime('now') WHERE company_id = ?`).run(qty, req.companyId);
+  db.prepare(`INSERT INTO billing_history (id, type, description, quantity, unit_price, amount, company_id) VALUES (?, 'refund', ?, ?, ?, ?, ?)`)
+    .run(uuidv4(), `Removed ${addon.name} ×${qty}`, qty, addon.monthly_price, -addon.monthly_price * qty, req.companyId);
 
-  res.json(planResponse());
+  res.json(planResponse(req.companyId));
 });
 
 module.exports = router;
 module.exports.PRICING = PRICING;
 module.exports.effectiveLimits = effectiveLimits;
+module.exports.getPlanRow = getPlanRow;

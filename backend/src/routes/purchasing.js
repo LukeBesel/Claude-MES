@@ -6,12 +6,12 @@ const router = express.Router();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function getPOWithDetails(id) {
+function getPOWithDetails(id, companyId) {
   const po = db.prepare(`
     SELECT po.*, v.name as vendor_name, v.code as vendor_code, v.contact_name, v.email as vendor_email
     FROM purchase_orders po JOIN vendors v ON v.id = po.vendor_id
-    WHERE po.id = ?
-  `).get(id);
+    WHERE po.id = ? AND po.company_id = ?
+  `).get(id, companyId);
   if (!po) return null;
   const lines = db.prepare(`
     SELECT pl.*, i.name as item_name, i.sku, i.unit_of_measure
@@ -23,12 +23,16 @@ function getPOWithDetails(id) {
   return { ...po, lines, total_amount, total_received };
 }
 
-function nextPONumber() {
+function nextPONumber(companyId) {
   const year = new Date().getFullYear();
-  const row = db.prepare(`SELECT po_number FROM purchase_orders WHERE po_number LIKE 'PO-${year}-%' ORDER BY po_number DESC LIMIT 1`).get();
+  const row = db.prepare(`SELECT po_number FROM purchase_orders WHERE company_id = ? AND po_number LIKE 'PO-${year}-%' ORDER BY po_number DESC LIMIT 1`).get(companyId);
   if (!row) return `PO-${year}-001`;
   const last = parseInt(row.po_number.split('-')[2]) || 0;
   return `PO-${year}-${String(last + 1).padStart(3, '0')}`;
+}
+
+function ownedPO(req) {
+  return db.prepare('SELECT * FROM purchase_orders WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
 }
 
 // ─── Vendors ─────────────────────────────────────────────────────────────────
@@ -40,11 +44,11 @@ router.get('/vendors', (req, res) => {
       COALESCE(SUM(CASE WHEN po.status NOT IN ('draft','cancelled') THEN 1 ELSE 0 END), 0) as active_po_count
     FROM vendors v LEFT JOIN purchase_orders po ON po.vendor_id = v.id
   `;
-  const where = [];
-  const params = [];
+  const where = ['v.company_id = ?'];
+  const params = [req.companyId];
   if (active_only === '1') { where.push('v.is_active = 1'); }
   if (search) { where.push('(v.name LIKE ? OR v.code LIKE ?)'); params.push(`%${search}%`, `%${search}%`); }
-  if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
+  sql += ` WHERE ${where.join(' AND ')}`;
   sql += ' GROUP BY v.id ORDER BY v.name';
   res.json(db.prepare(sql).all(...params));
 });
@@ -53,23 +57,23 @@ router.post('/vendors', (req, res) => {
   const { name, code, contact_name = '', email = '', phone = '', address = '',
           payment_terms = 'net30', lead_time_days = 14, rating = 3, notes = '' } = req.body;
   if (!name || !code) return res.status(400).json({ error: 'name and code required' });
-  const existing = db.prepare('SELECT id FROM vendors WHERE code = ?').get(code);
+  const existing = db.prepare('SELECT id FROM vendors WHERE code = ? AND company_id = ?').get(code, req.companyId);
   if (existing) return res.status(409).json({ error: 'Vendor code already exists' });
   const id = uuidv4();
-  db.prepare(`INSERT INTO vendors (id, name, code, contact_name, email, phone, address, payment_terms, lead_time_days, rating, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, name, code, contact_name, email, phone, address, payment_terms, lead_time_days, rating, notes);
+  db.prepare(`INSERT INTO vendors (id, name, code, contact_name, email, phone, address, payment_terms, lead_time_days, rating, notes, company_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, name, code, contact_name, email, phone, address, payment_terms, lead_time_days, rating, notes, req.companyId);
   res.status(201).json(db.prepare('SELECT * FROM vendors WHERE id = ?').get(id));
 });
 
 router.get('/vendors/:id', (req, res) => {
-  const v = db.prepare('SELECT * FROM vendors WHERE id = ?').get(req.params.id);
+  const v = db.prepare('SELECT * FROM vendors WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!v) return res.status(404).json({ error: 'Not found' });
   const orders = db.prepare('SELECT * FROM purchase_orders WHERE vendor_id = ? ORDER BY order_date DESC LIMIT 20').all(req.params.id);
   res.json({ ...v, orders });
 });
 
 router.put('/vendors/:id', (req, res) => {
-  const v = db.prepare('SELECT * FROM vendors WHERE id = ?').get(req.params.id);
+  const v = db.prepare('SELECT * FROM vendors WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!v) return res.status(404).json({ error: 'Not found' });
   const fields = ['name','code','contact_name','email','phone','address','payment_terms','lead_time_days','rating','notes','is_active'];
   const updates = {};
@@ -81,6 +85,8 @@ router.put('/vendors/:id', (req, res) => {
 });
 
 router.delete('/vendors/:id', (req, res) => {
+  const v = db.prepare('SELECT id FROM vendors WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
+  if (!v) return res.status(404).json({ error: 'Not found' });
   const hasPOs = db.prepare("SELECT id FROM purchase_orders WHERE vendor_id = ? AND status NOT IN ('cancelled') LIMIT 1").get(req.params.id);
   if (hasPOs) return res.status(409).json({ error: 'Cannot delete vendor with active purchase orders. Deactivate instead.' });
   db.prepare("UPDATE vendors SET is_active = 0, updated_at = datetime('now') WHERE id = ?").run(req.params.id);
@@ -99,12 +105,12 @@ router.get('/orders', (req, res) => {
     JOIN vendors v ON v.id = po.vendor_id
     LEFT JOIN po_lines pl ON pl.po_id = po.id
   `;
-  const where = [];
-  const params = [];
+  const where = ['po.company_id = ?'];
+  const params = [req.companyId];
   if (status)    { where.push('po.status = ?');   params.push(status); }
   if (vendor_id) { where.push('po.vendor_id = ?');params.push(vendor_id); }
   if (search)    { where.push('(po.po_number LIKE ? OR v.name LIKE ?)'); params.push(`%${search}%`, `%${search}%`); }
-  if (where.length) sql += ` WHERE ${where.join(' AND ')}`;
+  sql += ` WHERE ${where.join(' AND ')}`;
   sql += ' GROUP BY po.id ORDER BY po.order_date DESC';
   res.json(db.prepare(sql).all(...params));
 });
@@ -112,41 +118,43 @@ router.get('/orders', (req, res) => {
 router.post('/orders', (req, res) => {
   const { vendor_id, expected_date, notes = '', shipping_cost = 0, lines = [] } = req.body;
   if (!vendor_id) return res.status(400).json({ error: 'vendor_id required' });
-  const vendor = db.prepare('SELECT id FROM vendors WHERE id = ?').get(vendor_id);
+  const vendor = db.prepare('SELECT id FROM vendors WHERE id = ? AND company_id = ?').get(vendor_id, req.companyId);
   if (!vendor) return res.status(404).json({ error: 'Vendor not found' });
 
   const id = uuidv4();
-  const po_number = nextPONumber();
+  const po_number = nextPONumber(req.companyId);
   const order_date = new Date().toISOString().slice(0, 10);
-  db.prepare(`INSERT INTO purchase_orders (id, po_number, vendor_id, status, order_date, expected_date, shipping_cost, notes) VALUES (?, ?, ?, 'draft', ?, ?, ?, ?)`)
-    .run(id, po_number, vendor_id, order_date, expected_date || null, shipping_cost, notes);
+  db.prepare(`INSERT INTO purchase_orders (id, po_number, vendor_id, status, order_date, expected_date, shipping_cost, notes, company_id) VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?)`)
+    .run(id, po_number, vendor_id, order_date, expected_date || null, shipping_cost, notes, req.companyId);
 
+  const ownedItem = db.prepare('SELECT id FROM items WHERE id = ? AND company_id = ?');
   for (const line of lines) {
     if (!line.item_id || !line.quantity_ordered) continue;
+    if (!ownedItem.get(line.item_id, req.companyId)) continue;
     db.prepare(`INSERT INTO po_lines (id, po_id, item_id, quantity_ordered, unit_cost, notes) VALUES (?, ?, ?, ?, ?, ?)`)
       .run(uuidv4(), id, line.item_id, line.quantity_ordered, line.unit_cost || 0, line.notes || '');
   }
 
-  res.status(201).json(getPOWithDetails(id));
+  res.status(201).json(getPOWithDetails(id, req.companyId));
 });
 
 router.get('/orders/:id', (req, res) => {
-  const po = getPOWithDetails(req.params.id);
+  const po = getPOWithDetails(req.params.id, req.companyId);
   if (!po) return res.status(404).json({ error: 'Not found' });
   res.json(po);
 });
 
 router.put('/orders/:id', (req, res) => {
-  const po = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
+  const po = ownedPO(req);
   if (!po) return res.status(404).json({ error: 'Not found' });
   const { vendor_id, status, expected_date, shipping_cost, notes } = req.body;
   db.prepare(`UPDATE purchase_orders SET vendor_id=COALESCE(?,vendor_id), status=COALESCE(?,status), expected_date=COALESCE(?,expected_date), shipping_cost=COALESCE(?,shipping_cost), notes=COALESCE(?,notes), updated_at=datetime('now') WHERE id=?`)
     .run(vendor_id, status, expected_date, shipping_cost, notes, req.params.id);
-  res.json(getPOWithDetails(req.params.id));
+  res.json(getPOWithDetails(req.params.id, req.companyId));
 });
 
 router.delete('/orders/:id', (req, res) => {
-  const po = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
+  const po = ownedPO(req);
   if (!po) return res.status(404).json({ error: 'Not found' });
   if (!['draft','cancelled'].includes(po.status)) return res.status(409).json({ error: 'Only draft or cancelled orders can be deleted' });
   db.prepare('DELETE FROM purchase_orders WHERE id = ?').run(req.params.id);
@@ -156,42 +164,44 @@ router.delete('/orders/:id', (req, res) => {
 // ─── PO Lines ─────────────────────────────────────────────────────────────────
 
 router.post('/orders/:id/lines', (req, res) => {
-  const po = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
+  const po = ownedPO(req);
   if (!po) return res.status(404).json({ error: 'Not found' });
   if (po.status === 'received') return res.status(409).json({ error: 'Cannot modify a fully received order' });
   const { item_id, quantity_ordered, unit_cost = 0, notes = '' } = req.body;
   if (!item_id || !quantity_ordered) return res.status(400).json({ error: 'item_id and quantity_ordered required' });
+  const item = db.prepare('SELECT id FROM items WHERE id = ? AND company_id = ?').get(item_id, req.companyId);
+  if (!item) return res.status(404).json({ error: 'Item not found' });
   const lineId = uuidv4();
   db.prepare(`INSERT INTO po_lines (id, po_id, item_id, quantity_ordered, unit_cost, notes) VALUES (?, ?, ?, ?, ?, ?)`)
     .run(lineId, req.params.id, item_id, quantity_ordered, unit_cost, notes);
   db.prepare("UPDATE purchase_orders SET updated_at = datetime('now') WHERE id = ?").run(req.params.id);
-  res.status(201).json(getPOWithDetails(req.params.id));
+  res.status(201).json(getPOWithDetails(req.params.id, req.companyId));
 });
 
 router.delete('/orders/:id/lines/:lineId', (req, res) => {
-  const po = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
+  const po = ownedPO(req);
   if (!po) return res.status(404).json({ error: 'Not found' });
   if (po.status === 'received') return res.status(409).json({ error: 'Cannot modify a fully received order' });
   db.prepare('DELETE FROM po_lines WHERE id = ? AND po_id = ?').run(req.params.lineId, req.params.id);
-  res.json(getPOWithDetails(req.params.id));
+  res.json(getPOWithDetails(req.params.id, req.companyId));
 });
 
 // ─── POST /orders/:id/send ────────────────────────────────────────────────────
 
 router.post('/orders/:id/send', (req, res) => {
-  const po = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
+  const po = ownedPO(req);
   if (!po) return res.status(404).json({ error: 'Not found' });
   if (po.status !== 'draft') return res.status(409).json({ error: 'Only draft orders can be sent' });
   const lines = db.prepare('SELECT COUNT(*) as c FROM po_lines WHERE po_id = ?').get(req.params.id);
   if (lines.c === 0) return res.status(400).json({ error: 'Cannot send an order with no line items' });
   db.prepare("UPDATE purchase_orders SET status = 'sent', updated_at = datetime('now') WHERE id = ?").run(req.params.id);
-  res.json(getPOWithDetails(req.params.id));
+  res.json(getPOWithDetails(req.params.id, req.companyId));
 });
 
 // ─── POST /orders/:id/receive ─────────────────────────────────────────────────
 
 router.post('/orders/:id/receive', (req, res) => {
-  const po = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(req.params.id);
+  const po = ownedPO(req);
   if (!po) return res.status(404).json({ error: 'Not found' });
   if (['draft','cancelled','received'].includes(po.status)) {
     return res.status(409).json({ error: `Cannot receive items on a ${po.status} order` });
@@ -202,7 +212,6 @@ router.post('/orders/:id/receive', (req, res) => {
   if (!receipts.length) return res.status(400).json({ error: 'receipts array required' });
 
   const now = new Date().toISOString();
-  let allReceived = true;
 
   for (const r of receipts) {
     if (!r.line_id || !r.quantity_received) continue;
@@ -233,7 +242,7 @@ router.post('/orders/:id/receive', (req, res) => {
   db.prepare(`UPDATE purchase_orders SET status = ?, received_date = ?, updated_at = datetime('now') WHERE id = ?`)
     .run(newStatus, remaining <= 0 ? now : po.received_date, req.params.id);
 
-  res.json(getPOWithDetails(req.params.id));
+  res.json(getPOWithDetails(req.params.id, req.companyId));
 });
 
 // ─── GET /summary ─────────────────────────────────────────────────────────────
@@ -243,10 +252,11 @@ router.get('/summary', (req, res) => {
     SELECT status, COUNT(*) as count,
       COALESCE(SUM(pl.quantity_ordered * pl.unit_cost), 0) as value
     FROM purchase_orders po LEFT JOIN po_lines pl ON pl.po_id = po.id
+    WHERE po.company_id = ?
     GROUP BY status
-  `).all();
-  const total_vendors = db.prepare('SELECT COUNT(*) as c FROM vendors WHERE is_active = 1').get().c;
-  const open_pos = db.prepare("SELECT COUNT(*) as c FROM purchase_orders WHERE status IN ('draft','sent','partial')").get().c;
+  `).all(req.companyId);
+  const total_vendors = db.prepare('SELECT COUNT(*) as c FROM vendors WHERE is_active = 1 AND company_id = ?').get(req.companyId).c;
+  const open_pos = db.prepare("SELECT COUNT(*) as c FROM purchase_orders WHERE company_id = ? AND status IN ('draft','sent','partial')").get(req.companyId).c;
   res.json({ by_status, total_vendors, open_pos });
 });
 

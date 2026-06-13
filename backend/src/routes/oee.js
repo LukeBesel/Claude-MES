@@ -85,7 +85,7 @@ function calcOEE(station) {
 // ─── GET / - all machines with live OEE ───────────────────────────────────────
 
 router.get('/', (req, res) => {
-  const stations = db.prepare('SELECT * FROM stations ORDER BY name ASC').all();
+  const stations = db.prepare('SELECT * FROM stations WHERE company_id = ? ORDER BY name ASC').all(req.companyId);
   const result = stations.map(s => ({
     id: s.id,
     name: s.name,
@@ -104,7 +104,7 @@ router.get('/', (req, res) => {
 // ─── GET /:id - single machine detail ─────────────────────────────────────────
 
 router.get('/:id', (req, res) => {
-  const s = db.prepare('SELECT * FROM stations WHERE id = ?').get(req.params.id);
+  const s = db.prepare('SELECT * FROM stations WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!s) return res.status(404).json({ error: 'Not found' });
   res.json({
     id: s.id, name: s.name, description: s.description, location: s.location,
@@ -119,7 +119,7 @@ router.get('/:id', (req, res) => {
 // ─── POST /:id/event - log status change ──────────────────────────────────────
 
 router.post('/:id/event', (req, res) => {
-  const station = db.prepare('SELECT * FROM stations WHERE id = ?').get(req.params.id);
+  const station = db.prepare('SELECT * FROM stations WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!station) return res.status(404).json({ error: 'Not found' });
 
   const { event_type: rawEventType, reason = '' } = req.body;
@@ -167,7 +167,7 @@ router.post('/:id/event', (req, res) => {
 // ─── PUT /:id/settings - update OEE settings ──────────────────────────────────
 
 router.put('/:id/settings', (req, res) => {
-  const station = db.prepare('SELECT * FROM stations WHERE id = ?').get(req.params.id);
+  const station = db.prepare('SELECT * FROM stations WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!station) return res.status(404).json({ error: 'Not found' });
 
   const { planned_hours_per_day, ideal_cycle_seconds } = req.body;
@@ -185,6 +185,8 @@ router.put('/:id/settings', (req, res) => {
 
 router.get('/:id/history', (req, res) => {
   const { limit = 50 } = req.query;
+  const owned = db.prepare('SELECT id FROM stations WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
+  if (!owned) return res.status(404).json({ error: 'Not found' });
   const events = db.prepare(`
     SELECT * FROM machine_events
     WHERE station_id = ?
@@ -197,7 +199,7 @@ router.get('/:id/history', (req, res) => {
 // ─── GET /analytics/trend - plant-wide OEE trend (last 30 days) ───────────────
 
 router.get('/analytics/trend', (req, res) => {
-  const stations = db.prepare('SELECT id FROM stations').all();
+  const stations = db.prepare('SELECT id FROM stations WHERE company_id = ?').all(req.companyId);
   // For now return per-day throughput and uptime summary
   const trend = db.prepare(`
     SELECT
@@ -205,9 +207,9 @@ router.get('/analytics/trend', (req, res) => {
       COUNT(*) as completions,
       COUNT(DISTINCT station_id) as active_stations
     FROM completions
-    WHERE status='completed' AND completed_at >= date('now','-30 days')
+    WHERE company_id = ? AND status='completed' AND completed_at >= date('now','-30 days')
     GROUP BY date(completed_at) ORDER BY date ASC
-  `).all();
+  `).all(req.companyId);
   res.json({ station_count: stations.length, trend });
 });
 

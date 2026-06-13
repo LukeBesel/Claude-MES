@@ -18,7 +18,7 @@ function withCount(station) {
 }
 
 router.get('/', (req, res) => {
-  const stations = db.prepare(STATION_SELECT + ' ORDER BY s.name').all();
+  const stations = db.prepare(STATION_SELECT + ' WHERE s.company_id = ? ORDER BY s.name').all(req.companyId);
   res.json(stations.map(withCount));
 });
 
@@ -26,15 +26,15 @@ router.post('/', (req, res) => {
   const { name, description = '', location = '', department_id = null } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
   const id = uuidv4();
-  db.prepare('INSERT INTO stations (id, name, description, location, department_id) VALUES (?, ?, ?, ?, ?)')
-    .run(id, name, description, location, department_id || null);
+  db.prepare('INSERT INTO stations (id, name, description, location, department_id, company_id) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(id, name, description, location, department_id || null, req.companyId);
   const station = db.prepare(STATION_SELECT + ' WHERE s.id = ?').get(id);
   res.status(201).json({ ...station, completion_count: 0 });
 });
 
 router.put('/:id', (req, res) => {
   const { name, description, location, status, current_app_id, department_id } = req.body;
-  const station = db.prepare('SELECT * FROM stations WHERE id = ?').get(req.params.id);
+  const station = db.prepare('SELECT * FROM stations WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!station) return res.status(404).json({ error: 'Not found' });
   const updates = {
     name: name ?? station.name,
@@ -51,7 +51,7 @@ router.put('/:id', (req, res) => {
 });
 
 router.delete('/:id', (req, res) => {
-  db.prepare('DELETE FROM stations WHERE id = ?').run(req.params.id);
+  db.prepare('DELETE FROM stations WHERE id = ? AND company_id = ?').run(req.params.id, req.companyId);
   res.json({ success: true });
 });
 

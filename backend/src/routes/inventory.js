@@ -6,8 +6,8 @@ const router = express.Router();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function getItemWithStock(id) {
-  const item = db.prepare('SELECT * FROM items WHERE id = ?').get(id);
+function getItemWithStock(id, companyId) {
+  const item = db.prepare('SELECT * FROM items WHERE id = ? AND company_id = ?').get(id, companyId);
   if (!item) return null;
   const stock = db.prepare(`
     SELECT sl.quantity, sl.updated_at, l.id as location_id, l.name as location_name, l.code as location_code
@@ -40,8 +40,8 @@ router.get('/items', (req, res) => {
     FROM items i
     LEFT JOIN stock_levels sl ON sl.item_id = i.id
   `;
-  const params = [];
-  const where = ['1=1'];
+  const params = [req.companyId];
+  const where = ['i.company_id = ?'];
 
   if (category) { where.push('i.category = ?'); params.push(category); }
   if (search)   { where.push('(i.name LIKE ? OR i.sku LIKE ?)'); params.push(`%${search}%`, `%${search}%`); }
@@ -58,29 +58,36 @@ router.get('/items', (req, res) => {
 // ─── GET /items/summary ───────────────────────────────────────────────────────
 
 router.get('/items/summary', (req, res) => {
-  const total_items = db.prepare('SELECT COUNT(*) as c FROM items WHERE is_active = 1').get().c;
+  const cid = req.companyId;
+  const total_items = db.prepare('SELECT COUNT(*) as c FROM items WHERE is_active = 1 AND company_id = ?').get(cid).c;
   const total_value = db.prepare(`
     SELECT COALESCE(SUM(sl.quantity * i.unit_cost), 0) as v
-    FROM stock_levels sl JOIN items i ON i.id = sl.item_id WHERE i.is_active = 1
-  `).get().v;
+    FROM stock_levels sl JOIN items i ON i.id = sl.item_id WHERE i.is_active = 1 AND i.company_id = ?
+  `).get(cid).v;
   const low_stock = db.prepare(`
     SELECT COUNT(*) as c FROM (
       SELECT i.id FROM items i
       LEFT JOIN stock_levels sl ON sl.item_id = i.id
-      WHERE i.is_active = 1
+      WHERE i.is_active = 1 AND i.company_id = ?
       GROUP BY i.id HAVING COALESCE(SUM(sl.quantity), 0) <= i.reorder_point
     )
-  `).get().c;
-  const categories = db.prepare('SELECT DISTINCT category FROM items WHERE is_active = 1 ORDER BY category').all().map(r => r.category);
-  const today_receives = db.prepare("SELECT COUNT(*) as c FROM stock_movements WHERE movement_type = 'receive' AND date(created_at) = date('now')").get().c;
-  const today_consumes = db.prepare("SELECT ABS(COALESCE(SUM(quantity),0)) as c FROM stock_movements WHERE movement_type = 'consume' AND date(created_at) = date('now')").get().c;
+  `).get(cid).c;
+  const categories = db.prepare('SELECT DISTINCT category FROM items WHERE is_active = 1 AND company_id = ? ORDER BY category').all(cid).map(r => r.category);
+  const today_receives = db.prepare(`
+    SELECT COUNT(*) as c FROM stock_movements sm JOIN items i ON i.id = sm.item_id
+    WHERE i.company_id = ? AND sm.movement_type = 'receive' AND date(sm.created_at) = date('now')
+  `).get(cid).c;
+  const today_consumes = db.prepare(`
+    SELECT ABS(COALESCE(SUM(sm.quantity),0)) as c FROM stock_movements sm JOIN items i ON i.id = sm.item_id
+    WHERE i.company_id = ? AND sm.movement_type = 'consume' AND date(sm.created_at) = date('now')
+  `).get(cid).c;
   res.json({ total_items, total_value, low_stock, categories, today_receives, today_consumes });
 });
 
 // ─── GET /items/:id ───────────────────────────────────────────────────────────
 
 router.get('/items/:id', (req, res) => {
-  const item = getItemWithStock(req.params.id);
+  const item = getItemWithStock(req.params.id, req.companyId);
   if (!item) return res.status(404).json({ error: 'Not found' });
   const movements = db.prepare(`
     SELECT sm.*, l.name as location_name, l.code as location_code
@@ -96,32 +103,32 @@ router.post('/items', (req, res) => {
   const { sku, name, description = '', category = 'General', unit_of_measure = 'ea',
           unit_cost = 0, reorder_point = 0, reorder_qty = 0, lead_time_days = 7 } = req.body;
   if (!sku || !name) return res.status(400).json({ error: 'sku and name required' });
-  const existing = db.prepare('SELECT id FROM items WHERE sku = ?').get(sku);
+  const existing = db.prepare('SELECT id FROM items WHERE sku = ? AND company_id = ?').get(sku, req.companyId);
   if (existing) return res.status(409).json({ error: 'SKU already exists' });
   const id = uuidv4();
-  db.prepare(`INSERT INTO items (id, sku, name, description, category, unit_of_measure, unit_cost, reorder_point, reorder_qty, lead_time_days) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, sku, name, description, category, unit_of_measure, unit_cost, reorder_point, reorder_qty, lead_time_days);
-  res.status(201).json(getItemWithStock(id));
+  db.prepare(`INSERT INTO items (id, sku, name, description, category, unit_of_measure, unit_cost, reorder_point, reorder_qty, lead_time_days, company_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, sku, name, description, category, unit_of_measure, unit_cost, reorder_point, reorder_qty, lead_time_days, req.companyId);
+  res.status(201).json(getItemWithStock(id, req.companyId));
 });
 
 // ─── PUT /items/:id ───────────────────────────────────────────────────────────
 
 router.put('/items/:id', (req, res) => {
-  const item = db.prepare('SELECT * FROM items WHERE id = ?').get(req.params.id);
+  const item = db.prepare('SELECT * FROM items WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!item) return res.status(404).json({ error: 'Not found' });
   const fields = ['sku','name','description','category','unit_of_measure','unit_cost','reorder_point','reorder_qty','lead_time_days','is_active'];
   const updates = {};
   for (const f of fields) if (req.body[f] !== undefined) updates[f] = req.body[f];
-  if (Object.keys(updates).length === 0) return res.json(getItemWithStock(req.params.id));
+  if (Object.keys(updates).length === 0) return res.json(getItemWithStock(req.params.id, req.companyId));
   const sets = Object.keys(updates).map(k => `${k} = ?`).join(', ');
   db.prepare(`UPDATE items SET ${sets}, updated_at = datetime('now') WHERE id = ?`).run(...Object.values(updates), req.params.id);
-  res.json(getItemWithStock(req.params.id));
+  res.json(getItemWithStock(req.params.id, req.companyId));
 });
 
 // ─── DELETE /items/:id ────────────────────────────────────────────────────────
 
 router.delete('/items/:id', (req, res) => {
-  const item = db.prepare('SELECT * FROM items WHERE id = ?').get(req.params.id);
+  const item = db.prepare('SELECT * FROM items WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!item) return res.status(404).json({ error: 'Not found' });
   db.prepare("UPDATE items SET is_active = 0, updated_at = datetime('now') WHERE id = ?").run(req.params.id);
   res.json({ success: true });
@@ -133,8 +140,8 @@ router.get('/locations', (req, res) => {
   const locs = db.prepare(`
     SELECT l.*, COUNT(DISTINCT sl.item_id) as item_count, COALESCE(SUM(sl.quantity), 0) as total_units
     FROM locations l LEFT JOIN stock_levels sl ON sl.location_id = l.id
-    WHERE l.is_active = 1 GROUP BY l.id ORDER BY l.name
-  `).all();
+    WHERE l.is_active = 1 AND l.company_id = ? GROUP BY l.id ORDER BY l.name
+  `).all(req.companyId);
   res.json(locs);
 });
 
@@ -143,15 +150,18 @@ router.get('/locations', (req, res) => {
 router.post('/locations', (req, res) => {
   const { name, code, description = '', type = 'warehouse' } = req.body;
   if (!name || !code) return res.status(400).json({ error: 'name and code required' });
+  const existing = db.prepare('SELECT id FROM locations WHERE code = ? AND company_id = ?').get(code, req.companyId);
+  if (existing) return res.status(409).json({ error: 'Location code already exists' });
   const id = uuidv4();
-  db.prepare(`INSERT INTO locations (id, name, code, description, type) VALUES (?, ?, ?, ?, ?)`).run(id, name, code, description, type);
+  db.prepare(`INSERT INTO locations (id, name, code, description, type, company_id) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(id, name, code, description, type, req.companyId);
   res.status(201).json(db.prepare('SELECT * FROM locations WHERE id = ?').get(id));
 });
 
 // ─── PUT /locations/:id ───────────────────────────────────────────────────────
 
 router.put('/locations/:id', (req, res) => {
-  const loc = db.prepare('SELECT * FROM locations WHERE id = ?').get(req.params.id);
+  const loc = db.prepare('SELECT * FROM locations WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!loc) return res.status(404).json({ error: 'Not found' });
   const { name, code, description, type, is_active } = req.body;
   db.prepare(`UPDATE locations SET name=COALESCE(?,name), code=COALESCE(?,code), description=COALESCE(?,description), type=COALESCE(?,type), is_active=COALESCE(?,is_active) WHERE id=?`)
@@ -162,7 +172,7 @@ router.put('/locations/:id', (req, res) => {
 // ─── DELETE /locations/:id ────────────────────────────────────────────────────
 
 router.delete('/locations/:id', (req, res) => {
-  db.prepare("UPDATE locations SET is_active = 0 WHERE id = ?").run(req.params.id);
+  db.prepare("UPDATE locations SET is_active = 0 WHERE id = ? AND company_id = ?").run(req.params.id, req.companyId);
   res.json({ success: true });
 });
 
@@ -174,8 +184,12 @@ router.post('/movements', (req, res) => {
   if (!item_id || !movement_type || quantity === undefined) {
     return res.status(400).json({ error: 'item_id, movement_type, quantity required' });
   }
-  const item = db.prepare('SELECT * FROM items WHERE id = ?').get(item_id);
+  const item = db.prepare('SELECT * FROM items WHERE id = ? AND company_id = ?').get(item_id, req.companyId);
   if (!item) return res.status(404).json({ error: 'Item not found' });
+  if (location_id) {
+    const loc = db.prepare('SELECT id FROM locations WHERE id = ? AND company_id = ?').get(location_id, req.companyId);
+    if (!loc) return res.status(404).json({ error: 'Location not found' });
+  }
 
   const validTypes = ['receive', 'consume', 'adjust', 'transfer', 'ship', 'scrap', 'return'];
   if (!validTypes.includes(movement_type)) return res.status(400).json({ error: `movement_type must be one of: ${validTypes.join(', ')}` });
@@ -207,9 +221,9 @@ router.get('/movements', (req, res) => {
     FROM stock_movements sm
     JOIN items i ON i.id = sm.item_id
     LEFT JOIN locations l ON l.id = sm.location_id
-    WHERE sm.created_at >= datetime('now', ?)
+    WHERE i.company_id = ? AND sm.created_at >= datetime('now', ?)
   `;
-  const params = [`-${days} days`];
+  const params = [req.companyId, `-${days} days`];
   if (item_id)       { sql += ' AND sm.item_id = ?';        params.push(item_id); }
   if (movement_type) { sql += ' AND sm.movement_type = ?';  params.push(movement_type); }
   sql += ` ORDER BY sm.created_at DESC LIMIT ?`;

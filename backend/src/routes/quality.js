@@ -6,15 +6,15 @@ const router = express.Router();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function nextNCRNumber() {
+function nextNCRNumber(companyId) {
   const year = new Date().getFullYear();
-  const row = db.prepare(`SELECT ncr_number FROM ncrs WHERE ncr_number LIKE 'NCR-${year}-%' ORDER BY ncr_number DESC LIMIT 1`).get();
+  const row = db.prepare(`SELECT ncr_number FROM ncrs WHERE company_id = ? AND ncr_number LIKE 'NCR-${year}-%' ORDER BY ncr_number DESC LIMIT 1`).get(companyId);
   if (!row) return `NCR-${year}-001`;
   const last = parseInt(row.ncr_number.split('-')[2]) || 0;
   return `NCR-${year}-${String(last + 1).padStart(3, '0')}`;
 }
 
-function getNCRWithDetails(id) {
+function getNCRWithDetails(id, companyId) {
   const ncr = db.prepare(`
     SELECT n.*,
       a.name as app_name,
@@ -24,11 +24,18 @@ function getNCRWithDetails(id) {
     LEFT JOIN apps a ON a.id = n.app_id
     LEFT JOIN work_orders wo ON wo.id = n.work_order_id
     LEFT JOIN items i ON i.id = n.item_id
-    WHERE n.id = ?
-  `).get(id);
+    WHERE n.id = ? AND n.company_id = ?
+  `).get(id, companyId);
   if (!ncr) return null;
   const comments = db.prepare('SELECT * FROM ncr_comments WHERE ncr_id = ? ORDER BY created_at ASC').all(id);
   return { ...ncr, comments };
+}
+
+// Returns the id if the row exists in this company, else null
+function ownedOrNull(table, id, companyId) {
+  if (!id) return null;
+  const row = db.prepare(`SELECT id FROM ${table} WHERE id = ? AND company_id = ?`).get(id, companyId);
+  return row ? id : null;
 }
 
 // ─── GET /ncrs ────────────────────────────────────────────────────────────────
@@ -45,9 +52,9 @@ router.get('/ncrs', (req, res) => {
     LEFT JOIN apps a ON a.id = n.app_id
     LEFT JOIN work_orders wo ON wo.id = n.work_order_id
     LEFT JOIN items i ON i.id = n.item_id
-    WHERE 1=1
+    WHERE n.company_id = ?
   `;
-  const params = [];
+  const params = [req.companyId];
   if (status)   { sql += ' AND n.status = ?';   params.push(status); }
   if (severity) { sql += ' AND n.severity = ?'; params.push(severity); }
   if (source)   { sql += ' AND n.source = ?';   params.push(source); }
@@ -60,15 +67,16 @@ router.get('/ncrs', (req, res) => {
 // ─── GET /ncrs/summary ────────────────────────────────────────────────────────
 
 router.get('/summary', (req, res) => {
-  const total    = db.prepare('SELECT COUNT(*) as c FROM ncrs').get().c;
-  const open     = db.prepare("SELECT COUNT(*) as c FROM ncrs WHERE status = 'open'").get().c;
-  const investigating = db.prepare("SELECT COUNT(*) as c FROM ncrs WHERE status = 'investigating'").get().c;
-  const resolved = db.prepare("SELECT COUNT(*) as c FROM ncrs WHERE status = 'resolved'").get().c;
-  const closed   = db.prepare("SELECT COUNT(*) as c FROM ncrs WHERE status = 'closed'").get().c;
-  const critical = db.prepare("SELECT COUNT(*) as c FROM ncrs WHERE severity = 'critical' AND status NOT IN ('closed')").get().c;
-  const overdue  = db.prepare("SELECT COUNT(*) as c FROM ncrs WHERE due_date < date('now') AND status NOT IN ('resolved','closed')").get().c;
-  const by_source = db.prepare("SELECT source, COUNT(*) as count FROM ncrs GROUP BY source ORDER BY count DESC").all();
-  const by_severity = db.prepare("SELECT severity, COUNT(*) as count FROM ncrs WHERE status NOT IN ('closed') GROUP BY severity").all();
+  const cid = req.companyId;
+  const total    = db.prepare('SELECT COUNT(*) as c FROM ncrs WHERE company_id = ?').get(cid).c;
+  const open     = db.prepare("SELECT COUNT(*) as c FROM ncrs WHERE company_id = ? AND status = 'open'").get(cid).c;
+  const investigating = db.prepare("SELECT COUNT(*) as c FROM ncrs WHERE company_id = ? AND status = 'investigating'").get(cid).c;
+  const resolved = db.prepare("SELECT COUNT(*) as c FROM ncrs WHERE company_id = ? AND status = 'resolved'").get(cid).c;
+  const closed   = db.prepare("SELECT COUNT(*) as c FROM ncrs WHERE company_id = ? AND status = 'closed'").get(cid).c;
+  const critical = db.prepare("SELECT COUNT(*) as c FROM ncrs WHERE company_id = ? AND severity = 'critical' AND status NOT IN ('closed')").get(cid).c;
+  const overdue  = db.prepare("SELECT COUNT(*) as c FROM ncrs WHERE company_id = ? AND due_date < date('now') AND status NOT IN ('resolved','closed')").get(cid).c;
+  const by_source = db.prepare("SELECT source, COUNT(*) as count FROM ncrs WHERE company_id = ? GROUP BY source ORDER BY count DESC").all(cid);
+  const by_severity = db.prepare("SELECT severity, COUNT(*) as count FROM ncrs WHERE company_id = ? AND status NOT IN ('closed') GROUP BY severity").all(cid);
   res.json({ total, open, investigating, resolved, closed, critical, overdue, by_source, by_severity });
 });
 
@@ -78,22 +86,30 @@ router.post('/ncrs', (req, res) => {
   const {
     title, description = '', severity = 'minor', source = 'production',
     app_id, completion_id, work_order_id, item_id,
-    assigned_to = '', due_date, notes = ''
+    assigned_to = '', due_date
   } = req.body;
   if (!title) return res.status(400).json({ error: 'title required' });
+  const cid = req.companyId;
   const id = uuidv4();
-  const ncr_number = nextNCRNumber();
+  const ncr_number = nextNCRNumber(cid);
   db.prepare(`
-    INSERT INTO ncrs (id, ncr_number, title, description, severity, status, source, app_id, completion_id, work_order_id, item_id, assigned_to, due_date)
-    VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, ncr_number, title, description, severity, source, app_id || null, completion_id || null, work_order_id || null, item_id || null, assigned_to, due_date || null);
-  res.status(201).json(getNCRWithDetails(id));
+    INSERT INTO ncrs (id, ncr_number, title, description, severity, status, source, app_id, completion_id, work_order_id, item_id, assigned_to, due_date, company_id)
+    VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id, ncr_number, title, description, severity, source,
+    ownedOrNull('apps', app_id, cid),
+    ownedOrNull('completions', completion_id, cid),
+    ownedOrNull('work_orders', work_order_id, cid),
+    ownedOrNull('items', item_id, cid),
+    assigned_to, due_date || null, cid
+  );
+  res.status(201).json(getNCRWithDetails(id, cid));
 });
 
 // ─── GET /ncrs/:id ────────────────────────────────────────────────────────────
 
 router.get('/ncrs/:id', (req, res) => {
-  const ncr = getNCRWithDetails(req.params.id);
+  const ncr = getNCRWithDetails(req.params.id, req.companyId);
   if (!ncr) return res.status(404).json({ error: 'Not found' });
   res.json(ncr);
 });
@@ -101,7 +117,7 @@ router.get('/ncrs/:id', (req, res) => {
 // ─── PUT /ncrs/:id ────────────────────────────────────────────────────────────
 
 router.put('/ncrs/:id', (req, res) => {
-  const ncr = db.prepare('SELECT * FROM ncrs WHERE id = ?').get(req.params.id);
+  const ncr = db.prepare('SELECT * FROM ncrs WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!ncr) return res.status(404).json({ error: 'Not found' });
 
   const fields = ['title','description','severity','status','source','app_id','work_order_id','item_id','assigned_to','root_cause','corrective_action','due_date','resolved_at'];
@@ -113,16 +129,16 @@ router.put('/ncrs/:id', (req, res) => {
     updates.resolved_at = new Date().toISOString();
   }
 
-  if (!Object.keys(updates).length) return res.json(getNCRWithDetails(req.params.id));
+  if (!Object.keys(updates).length) return res.json(getNCRWithDetails(req.params.id, req.companyId));
   const sets = Object.keys(updates).map(k => `${k} = ?`).join(', ');
   db.prepare(`UPDATE ncrs SET ${sets}, updated_at = datetime('now') WHERE id = ?`).run(...Object.values(updates), req.params.id);
-  res.json(getNCRWithDetails(req.params.id));
+  res.json(getNCRWithDetails(req.params.id, req.companyId));
 });
 
 // ─── POST /ncrs/:id/comments ──────────────────────────────────────────────────
 
 router.post('/ncrs/:id/comments', (req, res) => {
-  const ncr = db.prepare('SELECT id FROM ncrs WHERE id = ?').get(req.params.id);
+  const ncr = db.prepare('SELECT id FROM ncrs WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!ncr) return res.status(404).json({ error: 'Not found' });
   const { author, body } = req.body;
   if (!author || !body) return res.status(400).json({ error: 'author and body required' });
@@ -135,7 +151,7 @@ router.post('/ncrs/:id/comments', (req, res) => {
 // ─── DELETE /ncrs/:id ─────────────────────────────────────────────────────────
 
 router.delete('/ncrs/:id', (req, res) => {
-  const ncr = db.prepare('SELECT * FROM ncrs WHERE id = ?').get(req.params.id);
+  const ncr = db.prepare('SELECT * FROM ncrs WHERE id = ? AND company_id = ?').get(req.params.id, req.companyId);
   if (!ncr) return res.status(404).json({ error: 'Not found' });
   db.prepare('DELETE FROM ncrs WHERE id = ?').run(req.params.id);
   res.json({ success: true });

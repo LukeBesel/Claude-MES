@@ -338,6 +338,200 @@ db.exec(`
   );
 `);
 
+// ─── Multi-tenancy: organizations, per-org settings, schema meta ──────────────
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS organizations (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    slug TEXT UNIQUE,
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS org_settings (
+    company_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    updated_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (company_id, key)
+  );
+
+  CREATE TABLE IF NOT EXISTS schema_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+`);
+
+// ─── Migrations: company_id on every directly-scoped table ────────────────────
+// Child tables (table_records, machine_events, stock_levels, stock_movements,
+// po_lines, ncr_comments, sessions) scope through their parent instead.
+
+const TENANT_TABLES = [
+  'apps', 'completions', 'tables', 'stations', 'departments', 'work_orders',
+  'dashboards', 'users', 'items', 'locations', 'vendors', 'purchase_orders',
+  'ncrs', 'product_types', 'billing_history', 'plan',
+];
+for (const t of TENANT_TABLES) {
+  const cols = db.prepare(`PRAGMA table_info(${t})`).all().map(r => r.name);
+  if (!cols.includes('company_id')) db.exec(`ALTER TABLE ${t} ADD COLUMN company_id TEXT REFERENCES organizations(id)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_${t}_company ON ${t}(company_id)`);
+}
+
+// ─── Migration: per-company unique constraints ────────────────────────────────
+// work_order_number, sku, location code, vendor code, po_number and ncr_number
+// were globally UNIQUE. Rebuild each table with UNIQUE(company_id, <col>) so
+// every organization gets its own numbering space. One-time, guarded by a
+// schema_meta flag. users.email intentionally stays globally unique (login has
+// no org discriminator).
+
+const uniqueRebuilt = db.prepare("SELECT value FROM schema_meta WHERE key = 'tenant_unique_rebuild'").get();
+if (!uniqueRebuilt) {
+  const REBUILDS = [
+    {
+      table: 'work_orders',
+      columns: ['id', 'work_order_number', 'part_number', 'part_name', 'quantity', 'quantity_completed', 'app_id', 'department_id', 'scheduled_start', 'scheduled_end', 'takt_time_minutes', 'status', 'priority', 'notes', 'created_at', 'updated_at', 'company_id'],
+      create: `CREATE TABLE work_orders_new (
+        id TEXT PRIMARY KEY,
+        work_order_number TEXT NOT NULL,
+        part_number TEXT NOT NULL,
+        part_name TEXT NOT NULL,
+        quantity INTEGER NOT NULL,
+        quantity_completed INTEGER DEFAULT 0,
+        app_id TEXT REFERENCES apps(id) ON DELETE SET NULL,
+        department_id TEXT REFERENCES departments(id) ON DELETE SET NULL,
+        scheduled_start TEXT,
+        scheduled_end TEXT,
+        takt_time_minutes REAL DEFAULT 0,
+        status TEXT DEFAULT 'pending' CHECK(status IN ('pending','in_progress','completed','overdue','cancelled')),
+        priority TEXT DEFAULT 'medium' CHECK(priority IN ('low','medium','high','critical')),
+        notes TEXT DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        company_id TEXT REFERENCES organizations(id),
+        UNIQUE(company_id, work_order_number)
+      )`,
+    },
+    {
+      table: 'items',
+      columns: ['id', 'sku', 'name', 'description', 'category', 'unit_of_measure', 'unit_cost', 'reorder_point', 'reorder_qty', 'lead_time_days', 'is_active', 'created_at', 'updated_at', 'company_id'],
+      create: `CREATE TABLE items_new (
+        id TEXT PRIMARY KEY,
+        sku TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        category TEXT DEFAULT 'General',
+        unit_of_measure TEXT DEFAULT 'ea',
+        unit_cost REAL DEFAULT 0,
+        reorder_point REAL DEFAULT 0,
+        reorder_qty REAL DEFAULT 0,
+        lead_time_days INTEGER DEFAULT 7,
+        is_active INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        company_id TEXT REFERENCES organizations(id),
+        UNIQUE(company_id, sku)
+      )`,
+    },
+    {
+      table: 'locations',
+      columns: ['id', 'name', 'code', 'description', 'type', 'is_active', 'created_at', 'company_id'],
+      create: `CREATE TABLE locations_new (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        code TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        type TEXT DEFAULT 'warehouse',
+        is_active INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now')),
+        company_id TEXT REFERENCES organizations(id),
+        UNIQUE(company_id, code)
+      )`,
+    },
+    {
+      table: 'vendors',
+      columns: ['id', 'name', 'code', 'contact_name', 'email', 'phone', 'address', 'payment_terms', 'lead_time_days', 'rating', 'notes', 'is_active', 'created_at', 'updated_at', 'company_id'],
+      create: `CREATE TABLE vendors_new (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        code TEXT NOT NULL,
+        contact_name TEXT DEFAULT '',
+        email TEXT DEFAULT '',
+        phone TEXT DEFAULT '',
+        address TEXT DEFAULT '',
+        payment_terms TEXT DEFAULT 'net30',
+        lead_time_days INTEGER DEFAULT 14,
+        rating INTEGER DEFAULT 3,
+        notes TEXT DEFAULT '',
+        is_active INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        company_id TEXT REFERENCES organizations(id),
+        UNIQUE(company_id, code)
+      )`,
+    },
+    {
+      table: 'purchase_orders',
+      columns: ['id', 'po_number', 'vendor_id', 'status', 'order_date', 'expected_date', 'received_date', 'shipping_cost', 'notes', 'created_at', 'updated_at', 'company_id'],
+      create: `CREATE TABLE purchase_orders_new (
+        id TEXT PRIMARY KEY,
+        po_number TEXT NOT NULL,
+        vendor_id TEXT NOT NULL REFERENCES vendors(id),
+        status TEXT NOT NULL DEFAULT 'draft',
+        order_date TEXT NOT NULL,
+        expected_date TEXT,
+        received_date TEXT,
+        shipping_cost REAL DEFAULT 0,
+        notes TEXT DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        company_id TEXT REFERENCES organizations(id),
+        UNIQUE(company_id, po_number)
+      )`,
+    },
+    {
+      table: 'ncrs',
+      columns: ['id', 'ncr_number', 'title', 'description', 'severity', 'status', 'source', 'app_id', 'completion_id', 'work_order_id', 'item_id', 'assigned_to', 'root_cause', 'corrective_action', 'due_date', 'resolved_at', 'created_at', 'updated_at', 'company_id'],
+      create: `CREATE TABLE ncrs_new (
+        id TEXT PRIMARY KEY,
+        ncr_number TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        severity TEXT NOT NULL DEFAULT 'minor',
+        status TEXT NOT NULL DEFAULT 'open',
+        source TEXT DEFAULT 'production',
+        app_id TEXT REFERENCES apps(id) ON DELETE SET NULL,
+        completion_id TEXT REFERENCES completions(id) ON DELETE SET NULL,
+        work_order_id TEXT REFERENCES work_orders(id) ON DELETE SET NULL,
+        item_id TEXT REFERENCES items(id) ON DELETE SET NULL,
+        assigned_to TEXT DEFAULT '',
+        root_cause TEXT DEFAULT '',
+        corrective_action TEXT DEFAULT '',
+        due_date TEXT,
+        resolved_at TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        company_id TEXT REFERENCES organizations(id),
+        UNIQUE(company_id, ncr_number)
+      )`,
+    },
+  ];
+
+  db.pragma('foreign_keys = OFF');
+  const rebuildAll = db.transaction(() => {
+    for (const r of REBUILDS) {
+      const cols = r.columns.join(', ');
+      db.exec(r.create);
+      db.exec(`INSERT INTO ${r.table}_new (${cols}) SELECT ${cols} FROM ${r.table}`);
+      db.exec(`DROP TABLE ${r.table}`);
+      db.exec(`ALTER TABLE ${r.table}_new RENAME TO ${r.table}`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_${r.table}_company ON ${r.table}(company_id)`);
+    }
+    db.prepare(`INSERT INTO schema_meta (key, value) VALUES ('tenant_unique_rebuild', '1')`).run();
+  });
+  rebuildAll();
+  db.pragma('foreign_keys = ON');
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function isoOffset(days, hours = 8) {
@@ -356,9 +550,9 @@ function daysAgo(n) {
 // ─── Seed: plan ───────────────────────────────────────────────────────────────
 
 function seedPlan() {
-  const existing = db.prepare('SELECT id FROM plan WHERE id = 1').get();
+  const existing = db.prepare('SELECT id FROM plan LIMIT 1').get();
   if (!existing) {
-    db.prepare(`INSERT INTO plan (id, tier, app_limit, dashboard_limit) VALUES (1, 'free', 3, 2)`).run();
+    db.prepare(`INSERT INTO plan (tier, app_limit, dashboard_limit) VALUES ('free', 3, 2)`).run();
   }
 }
 
@@ -912,6 +1106,35 @@ seedDashboard();
   const defaultHeadcounts = { 'Assembly': 4, 'Quality Control': 2, 'Packaging': 2, 'Maintenance': 1 };
   const setHeadcount = db.prepare('UPDATE departments SET headcount = ? WHERE name = ? AND (headcount IS NULL OR headcount = 0)');
   for (const [deptName, hc] of Object.entries(defaultHeadcounts)) setHeadcount.run(hc, deptName);
+}
+
+// ─── Backfill: default organization ──────────────────────────────────────────
+// Idempotent, runs every boot. Any rows without a company_id (seed data and
+// pre-tenancy databases) are adopted by the default organization.
+
+{
+  let defaultOrg = db.prepare('SELECT id FROM organizations LIMIT 1').get();
+  if (!defaultOrg) {
+    const id = uuidv4();
+    const nameRow = db.prepare("SELECT value FROM company_settings WHERE key = 'company_name'").get();
+    const name = nameRow?.value || 'HartMonitor Demo Co';
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'default';
+    db.prepare('INSERT INTO organizations (id, name, slug) VALUES (?, ?, ?)').run(id, name, slug);
+    defaultOrg = { id };
+  }
+
+  for (const t of TENANT_TABLES) {
+    db.prepare(`UPDATE ${t} SET company_id = ? WHERE company_id IS NULL`).run(defaultOrg.id);
+  }
+
+  // Copy legacy company_settings into the default org's org_settings once
+  const hasOrgSettings = db.prepare('SELECT 1 FROM org_settings WHERE company_id = ? LIMIT 1').get(defaultOrg.id);
+  if (!hasOrgSettings) {
+    const ins = db.prepare(`INSERT OR IGNORE INTO org_settings (company_id, key, value, updated_at) VALUES (?, ?, ?, ?)`);
+    for (const r of db.prepare('SELECT key, value, updated_at FROM company_settings').all()) {
+      ins.run(defaultOrg.id, r.key, r.value, r.updated_at);
+    }
+  }
 }
 
 module.exports = db;

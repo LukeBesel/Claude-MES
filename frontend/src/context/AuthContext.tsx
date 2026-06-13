@@ -13,6 +13,7 @@ interface AuthContextValue {
   user: User | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
+  signup: (companyName: string, displayName: string, email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   isAtLeast: (role: 'developer' | 'manager' | 'supervisor' | 'operator' | 'viewer') => boolean;
 }
@@ -48,6 +49,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('hm_user', JSON.stringify(full));
   };
 
+  const signup = async (companyName: string, displayName: string, email: string, password: string) => {
+    const data = await api.signup(companyName, displayName, email, password);
+    localStorage.setItem('hm_token', data.token);
+    localStorage.setItem('hm_user', JSON.stringify(data.user));
+    setUser(data.user);
+    const full = await api.getMe().catch(() => data.user);
+    setUser(full);
+    localStorage.setItem('hm_user', JSON.stringify(full));
+  };
+
   const logout = async () => {
     await api.logout().catch(() => {});
     localStorage.removeItem('hm_token');
@@ -61,7 +72,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, isAtLeast }}>
+    <AuthContext.Provider value={{ user, loading, login, signup, logout, isAtLeast }}>
       {children}
     </AuthContext.Provider>
   );

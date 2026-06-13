@@ -35,7 +35,7 @@ function requireAuth(req, res, next) {
   const token = authHeader.slice(7);
   const row = db.prepare(`
     SELECT s.id as session_id, s.user_id, s.expires_at,
-           u.email, u.display_name, u.role, u.is_active
+           u.email, u.display_name, u.role, u.is_active, u.company_id
     FROM sessions s JOIN users u ON u.id = s.user_id
     WHERE s.token = ? AND s.expires_at > datetime('now') AND u.is_active = 1
   `).get(token);
@@ -44,10 +44,15 @@ function requireAuth(req, res, next) {
     return res.status(401).json({ error: 'Invalid or expired session', code: 'INVALID_TOKEN' });
   }
 
+  if (!row.company_id) {
+    return res.status(401).json({ error: 'User is not assigned to an organization', code: 'NO_ORGANIZATION' });
+  }
+
   req.user = {
     id: row.user_id, email: row.email, display_name: row.display_name,
-    role: row.role, session_id: row.session_id,
+    role: row.role, session_id: row.session_id, company_id: row.company_id,
   };
+  req.companyId = row.company_id;
   next();
 }
 

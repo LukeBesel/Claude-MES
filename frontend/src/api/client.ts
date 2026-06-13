@@ -234,6 +234,16 @@ export const api = {
       if (!res.ok) throw Object.assign(new Error(data.error || 'Login failed'), { status: res.status });
       return data;
     }),
+  signup: (company_name: string, display_name: string, email: string, password: string) =>
+    fetch(`${BASE}/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ company_name, display_name, email, password }),
+    }).then(async res => {
+      const data = await res.json();
+      if (!res.ok) throw Object.assign(new Error(data.error || 'Signup failed'), { status: res.status });
+      return data;
+    }),
   logout: () => request<any>('/auth/logout', { method: 'POST' }),
   getMe: () => request<any>('/auth/me'),
   changePassword: (current_password: string, new_password: string) =>
